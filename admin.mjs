@@ -1,0 +1,54 @@
+import {randomBytes,randomUUID,scryptSync,scrypt,timingSafeEqual} from 'node:crypto';
+import {promisify} from 'node:util';
+const derive=promisify(scrypt),options={N:32768,r:8,p:1,maxmem:67108864};
+export function installAdmin({db,code=null,body,replyError,rateLimit,checkPassword,consumeMfa,send,revokeUser,notifyAll,voiceSnapshot,kickVoice}){
+  const get=(sql,...args)=>db.prepare(sql).get(...args),all=(sql,...args)=>db.prepare(sql).all(...args),run=(sql,...args)=>db.prepare(sql).run(...args),now=()=>Date.now();
+  db.exec('CREATE TABLE IF NOT EXISTS admin_audit(id INTEGER PRIMARY KEY AUTOINCREMENT,actor_id TEXT NOT NULL REFERENCES users(id),action TEXT NOT NULL,target TEXT,details TEXT NOT NULL,created INTEGER NOT NULL)');
+  if(code){if(typeof code!=='string'||code.trim().length<16||code.length>128)throw new Error('Le code admin doit contenir 16 à 128 caractères.');const salt=randomBytes(16).toString('hex'),hash=scryptSync(code.trim(),salt,64,options).toString('hex');run('INSERT OR REPLACE INTO settings VALUES(?,?)','admin_code_salt',salt);run('INSERT OR REPLACE INTO settings VALUES(?,?)','admin_code_hash',hash);run('UPDATE sessions SET admin_expires=0');}
+  function setting(key,fallback){return get('SELECT value FROM settings WHERE key=?',key)?.value??fallback;}
+  function settings(){return {registrationOpen:setting('registration_open','1')==='1',maintenance:setting('maintenance','0')==='1',announcement:setting('announcement','')};}
+  function audit(actor,action,target=null,details={}){run('INSERT INTO admin_audit(actor_id,action,target,details,created) VALUES(?,?,?,?,?)',actor,action,target,JSON.stringify(details),now());}
+  function actor(userId){const user=get('SELECT * FROM users WHERE id=?',userId);if(!user?.is_admin||user.suspended)replyError(403,'Ce panneau est réservé à un administrateur autorisé.');return user;}
+  function authorize(session){actor(session.user_id);const current=get('SELECT admin_expires FROM sessions WHERE token=? AND expires>?',session.token,now());if(!current||current.admin_expires<=now())replyError(403,'Déverrouillez le panneau avec votre code admin.');return current;}
+  function safeText(value,max){if(typeof value!=='string'||!value.trim()||value.length>max)replyError(400,'Texte invalide.');return value.trim();}
+  async function handle({path,method,request,session,reply}){
+    if(!path.startsWith('/api/admin/'))return false;
+    const user=actor(session.user_id);
+    if(path==='/api/admin/status'&&method==='GET'){const unlocked=(get('SELECT admin_expires FROM sessions WHERE token=?',session.token)?.admin_expires||0)>now();reply(200,{eligible:true,unlocked,expires:get('SELECT admin_expires FROM sessions WHERE token=?',session.token)?.admin_expires||0,codeConfigured:!!setting('admin_code_hash','')});return true;}
+    if(path==='/api/admin/unlock'&&method==='POST'){
+      rateLimit(request,'admin-unlock',5);if(user.admin_locked_until>now())replyError(429,'Accès admin temporairement bloqué. Réessayez dans cinq minutes.');
+      const input=await body(request),stored=setting('admin_code_hash',''),salt=setting('admin_code_salt','');if(!stored)replyError(503,'Code admin non configuré.');
+      if(typeof input.code!=='string'||input.code.length>128)replyError(400,'Code admin invalide.');const hash=await derive(input.code.trim(),salt,64,options);
+      if(!timingSafeEqual(hash,Buffer.from(stored,'hex'))){const fresh=actor(user.id),failures=fresh.admin_failures+1;run('UPDATE users SET admin_failures=?,admin_locked_until=? WHERE id=?',failures>=5?0:failures,failures>=5?now()+300000:0,user.id);audit(user.id,'unlock_failed');replyError(401,'Code admin incorrect.');}
+      await checkPassword(user,input.authSecret);const fresh=actor(user.id);if(fresh.admin_locked_until>now())replyError(429,'Accès temporairement bloqué.');if(fresh.mfa_secret)consumeMfa(fresh,input.otp);
+      const expires=now()+900000;run('UPDATE users SET admin_failures=0,admin_locked_until=0 WHERE id=?',user.id);run('UPDATE sessions SET admin_expires=? WHERE token=?',expires,session.token);audit(user.id,'unlock');reply(200,{ok:true,expires});return true;
+    }
+    authorize(session);
+    if(path==='/api/admin/lock'&&method==='POST'){run('UPDATE sessions SET admin_expires=0 WHERE token=?',session.token);audit(user.id,'lock');reply(200,{ok:true});return true;}
+    if(path==='/api/admin/dashboard'&&method==='GET'){
+      const accounts=all('SELECT id,username,profile,email_verified,mfa_secret,suspended,is_admin FROM users ORDER BY username LIMIT 500').map(row=>({id:row.id,username:row.username,displayName:JSON.parse(row.profile).displayName||row.username,emailVerified:!!row.email_verified,mfaEnabled:!!row.mfa_secret,suspended:!!row.suspended,administrator:!!row.is_admin}));
+      const spaces=all('SELECT s.*,u.username AS owner,(SELECT COUNT(*) FROM members m WHERE m.space_id=s.id) AS members FROM spaces s JOIN users u ON u.id=s.owner_id ORDER BY s.name LIMIT 300').map(row=>({id:row.id,name:row.name,icon:row.icon,kind:row.kind,owner:row.owner,members:row.members}));
+      const channels=all('SELECT c.id,c.name,c.topic,c.kind,c.private,c.space_id,s.name AS space_name FROM channels c JOIN spaces s ON s.id=c.space_id ORDER BY s.name,c.name LIMIT 500');
+      const invitations=all('SELECT i.token,i.space_id,i.expires,i.uses,s.name AS space_name FROM invites i JOIN spaces s ON s.id=i.space_id WHERE i.expires>? ORDER BY i.expires DESC LIMIT 100',now()).map(({token,...row})=>({...row,id:token}));
+      const messages=all('SELECT m.id,m.created,m.edited,m.pinned,u.username AS author,c.name AS channel,s.name AS space FROM messages m JOIN users u ON u.id=m.author_id JOIN channels c ON c.id=m.channel_id JOIN spaces s ON s.id=c.space_id ORDER BY m.seq DESC LIMIT 50');
+      reply(200,{counts:{users:get('SELECT COUNT(*) AS n FROM users').n,spaces:get('SELECT COUNT(*) AS n FROM spaces').n,channels:get('SELECT COUNT(*) AS n FROM channels').n,messages:get('SELECT COUNT(*) AS n FROM messages').n,sessions:get('SELECT COUNT(*) AS n FROM sessions WHERE expires>?',now()).n},accounts,spaces,channels,invitations,messages,voice:voiceSnapshot(),settings:settings(),audit:all('SELECT a.action,a.target,a.details,a.created,u.username AS actor FROM admin_audit a JOIN users u ON u.id=a.actor_id ORDER BY a.id DESC LIMIT 100').map(row=>({...row,details:JSON.parse(row.details)})),expires:get('SELECT admin_expires FROM sessions WHERE token=?',session.token).admin_expires});return true;
+    }
+    if(path==='/api/admin/settings'&&method==='PATCH'){const input=await body(request);if(typeof input.registrationOpen!=='boolean'||typeof input.maintenance!=='boolean'||typeof input.announcement!=='string'||input.announcement.length>240)replyError(400,'Réglages invalides.');db.exec('BEGIN');try{for(const[key,value]of [['registration_open',input.registrationOpen?'1':'0'],['maintenance',input.maintenance?'1':'0'],['announcement',input.announcement.trim()]])run('INSERT OR REPLACE INTO settings VALUES(?,?)',key,value);audit(user.id,'settings_updated',null,{registrationOpen:input.registrationOpen,maintenance:input.maintenance});db.exec('COMMIT');}catch(error){db.exec('ROLLBACK');throw error;}notifyAll();reply(200,{ok:true});return true;}
+    let match;
+    if((match=path.match(/^\/api\/admin\/users\/([^/]+)\/(suspend|sessions)$/))&&method==='POST'){
+      const target=get('SELECT * FROM users WHERE id=?',match[1]);if(!target)replyError(404,'Compte introuvable.');if(target.is_admin)replyError(403,'Le compte administrateur est protégé.');const input=await body(request);
+      if(match[2]==='suspend'){if(typeof input.suspended!=='boolean')replyError(400,'Statut invalide.');run('UPDATE users SET suspended=? WHERE id=?',input.suspended?1:0,target.id);if(input.suspended)revokeUser(target.id);audit(user.id,input.suspended?'user_suspended':'user_restored',target.id);}else{revokeUser(target.id);audit(user.id,'sessions_revoked',target.id);}notifyAll();reply(200,{ok:true});return true;
+    }
+    if((match=path.match(/^\/api\/admin\/spaces\/([^/]+)$/))&&method==='PATCH'){const target=get('SELECT * FROM spaces WHERE id=?',match[1]);if(!target||target.kind==='dm')replyError(400,'Communauté requise.');const input=await body(request);run('UPDATE spaces SET name=?,icon=? WHERE id=?',safeText(input.name,50),safeText(input.icon,8),target.id);audit(user.id,'space_updated',target.id);notifyAll();reply(200,{ok:true});return true;}
+    if((match=path.match(/^\/api\/admin\/channels\/([^/]+)$/))&&['PATCH','DELETE'].includes(method)){
+      const target=get('SELECT c.*,s.kind AS space_kind FROM channels c JOIN spaces s ON s.id=c.space_id WHERE c.id=?',match[1]);if(!target||target.space_kind==='dm')replyError(400,'Salon de communauté requis.');
+      if(method==='PATCH'){const input=await body(request);run('UPDATE channels SET name=?,topic=? WHERE id=?',safeText(input.name,40),typeof input.topic==='string'?input.topic.slice(0,160):'',target.id);audit(user.id,'channel_updated',target.id);}else{kickVoice(target.id);run('DELETE FROM channels WHERE id=?',target.id);audit(user.id,'channel_deleted',target.id);}notifyAll();reply(200,{ok:true});return true;
+    }
+    if(path==='/api/admin/invites/revoke'&&method==='POST'){const input=await body(request);if(!get('SELECT token FROM invites WHERE token=?',input.id))replyError(404,'Invitation introuvable.');run('DELETE FROM invites WHERE token=?',input.id);audit(user.id,'invite_revoked');reply(200,{ok:true});return true;}
+    if((match=path.match(/^\/api\/admin\/messages\/([^/]+)$/))&&method==='DELETE'){const message=get('SELECT channel_id FROM messages WHERE id=?',match[1]);if(!message)replyError(404,'Message introuvable.');run('DELETE FROM messages WHERE id=?',match[1]);audit(user.id,'message_deleted',match[1]);notifyAll({type:'messages',channelId:message.channel_id});reply(200,{ok:true});return true;}
+    if(path==='/api/admin/voice/kick'&&method==='POST'){const input=await body(request);kickVoice(input.channelId,input.userId);audit(user.id,'voice_disconnected',input.userId);reply(200,{ok:true});return true;}
+    if(path==='/api/admin/code'&&method==='PATCH'){const input=await body(request);if(typeof input.code!=='string'||input.code.trim().length<16||input.code.length>128)replyError(400,'Choisissez un code de 16 à 128 caractères.');await checkPassword(user,input.authSecret);const fresh=actor(user.id);if(fresh.mfa_secret)consumeMfa(fresh,input.otp);authorize(session);const salt=randomBytes(16).toString('hex');const hash=(await derive(input.code.trim(),salt,64,options)).toString('hex');authorize(session);run('INSERT OR REPLACE INTO settings VALUES(?,?)','admin_code_hash',hash);run('INSERT OR REPLACE INTO settings VALUES(?,?)','admin_code_salt',salt);run('UPDATE sessions SET admin_expires=0');audit(user.id,'code_rotated');reply(200,{ok:true});return true;}
+    replyError(404,'Action admin introuvable.');
+  }
+  return {handle,settings};
+}

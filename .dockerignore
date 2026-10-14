@@ -1,0 +1,10 @@
+*
+!Dockerfile
+!package.json
+!server.mjs
+!admin.mjs
+!security.mjs
+!public/
+!public/**
+!scripts/
+!scripts/start-production.mjs
