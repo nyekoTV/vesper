@@ -1,13 +1,13 @@
 # Déploiement Vesper
 
-État : paquet préparé ; aucune instance distante créée ou publiée.
+État : projet Railway et service créés, volume persistant monté sur `/data`, domaine réservé. Source GitHub préparée dans les changements en attente. Aucun déploiement applicatif actif : envoi des e-mails à configurer avant lancement.
 
 ## Railway
 
 Le dossier de service est `outputs/vesper` (ou la racine si ce dossier est envoyé seul). Le Dockerfile n’installe aucune dépendance : le serveur utilise Node et les ressources navigateur sont déjà fournies.
 
 1. Relier un compte Railway et choisir un projet et son budget.
-2. Déployer le dossier Vesper avec le Dockerfile et `railway.json`.
+2. Déployer le dossier Vesper avec le Dockerfile. Les paramètres de santé, de redémarrage et du volume sont configurés directement sur le service Railway. Le fichier `railway.json` fourni est un ancien format facultatif ; ne pas le sélectionner comme fichier de configuration dans les versions récentes de Railway.
 3. Ajouter un volume persistant monté sur `/data`. Utiliser une seule instance : présence, événements et signalisation vocale sont en mémoire.
 4. Générer un domaine HTTPS Railway, puis configurer ces variables côté hébergeur :
 
