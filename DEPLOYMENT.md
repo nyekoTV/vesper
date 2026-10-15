@@ -1,6 +1,12 @@
 # Déploiement Vesper
 
-État : projet Railway et service créés, volume persistant monté sur `/data`, domaine réservé. Source GitHub préparée dans les changements en attente. Aucun déploiement applicatif actif : envoi des e-mails à configurer avant lancement.
+État : projet Railway et service créés, volume persistant monté sur `/data`, domaine réservé. Source GitHub préparée dans les changements en attente. Avant lancement, configurer GitHub OAuth ou le service mail.
+
+## Test sans domaine d’envoi : GitHub
+
+Enregistrer une application OAuth GitHub, nom « Vesper », accueil `https://vesper-production-9796.up.railway.app`, callback `https://vesper-production-9796.up.railway.app/api/oauth/github/callback`. Garder Device Flow désactivé. Copier le Client ID et le Client Secret dans les variables Railway `GITHUB_CLIENT_ID` et `GITHUB_CLIENT_SECRET`. Ne pas les transmettre dans la conversation ni dans Git. Resend et MAIL_FROM ne sont pas nécessaires avec cette configuration. Le démarrage de production accepte cette alternative tout en imposant la vérification d’identité des nouvelles inscriptions.
+
+L’inscription ou connexion GitHub requiert toujours un mot de passe Vesper pour le coffre, et l’A2F Vesper si activée. Il faut un compte GitHub avec une adresse vérifiée. Les comptes locaux existants doivent être migrés par canal privé avec la base et la clé MFA avant de retrouver leurs droits sur l’instance distante.
 
 ## Railway
 

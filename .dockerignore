@@ -4,6 +4,7 @@
 !server.mjs
 !admin.mjs
 !security.mjs
+!oauth.mjs
 !public/
 !public/**
 !scripts/

@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import { canonical } from './public/crypto.mjs';
 import {normalizeEmail,encodeBase32,encryptMfa,decryptMfa,matchTotp,resendMailer} from './security.mjs';
 import {installAdmin} from './admin.mjs';
+import {githubIdentity} from './oauth.mjs';
 const hashPassword = promisify(scrypt), ROOT = dirname(fileURLToPath(import.meta.url));
 const json = value => JSON.stringify(value), parse = value => JSON.parse(value);
 const fail = (status, message) => { const error = new Error(message); error.status = status; throw error; };
@@ -16,7 +17,7 @@ const text = (value, max = 100) => { if (typeof value !== 'string' || !value.tri
 const id = () => randomUUID(), now = () => Date.now();
 const permissions = ['manageChannels','manageRoles','moderateMessages'];
 const publicUser = row => ({ id: row.id, username: row.username, ...parse(row.profile), publicKey: parse(row.public_key), signingKey: parse(row.signing_key) });
-export function createApp({ databasePath = resolve(ROOT,'data/vesper.sqlite'), origin = 'http://localhost:4180', iceServers = [], secureCookies = origin.startsWith('https:'),sendVerificationEmail=null,requireEmailVerification=!!sendVerificationEmail||!['localhost','127.0.0.1'].includes(new URL(origin).hostname),adminCode=null } = {}) {
+export function createApp({ databasePath = resolve(ROOT,'data/vesper.sqlite'), origin = 'http://localhost:4180', iceServers = [], secureCookies = origin.startsWith('https:'),sendVerificationEmail=null,requireEmailVerification=!!sendVerificationEmail||!['localhost','127.0.0.1'].includes(new URL(origin).hostname),adminCode=null,github={} } = {}) {
   if (databasePath !== ':memory:') mkdirSync(dirname(databasePath), { recursive: true });
   const db = new DatabaseSync(databasePath);
   db.exec(`PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;
@@ -33,6 +34,7 @@ export function createApp({ databasePath = resolve(ROOT,'data/vesper.sqlite'), o
     CREATE TABLE IF NOT EXISTS email_challenges(user_id TEXT PRIMARY KEY REFERENCES users(id),code_hash TEXT NOT NULL,expires INTEGER NOT NULL,tries INTEGER NOT NULL,sent INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS friendships(id TEXT PRIMARY KEY,pair TEXT UNIQUE NOT NULL,sender_id TEXT NOT NULL REFERENCES users(id),recipient_id TEXT NOT NULL REFERENCES users(id),status TEXT NOT NULL CHECK(status IN ('pending','accepted')),created INTEGER NOT NULL);
   `);
+  const oauth=githubIdentity({db,origin,...github});
   const userColumns=new Set(db.prepare('PRAGMA table_info(users)').all().map(column=>column.name));
   for(const [column,type]of Object.entries({email:'TEXT',email_verified:'INTEGER NOT NULL DEFAULT 0',mfa_secret:'TEXT',mfa_pending:'TEXT',mfa_pending_expires:'INTEGER',mfa_last_counter:'INTEGER NOT NULL DEFAULT -1',recovery_hashes:"TEXT NOT NULL DEFAULT '[]'",mfa_failures:'INTEGER NOT NULL DEFAULT 0',mfa_locked_until:'INTEGER NOT NULL DEFAULT 0',onboarding_seen:'INTEGER NOT NULL DEFAULT 1',is_admin:'INTEGER NOT NULL DEFAULT 0',suspended:'INTEGER NOT NULL DEFAULT 0',admin_failures:'INTEGER NOT NULL DEFAULT 0',admin_locked_until:'INTEGER NOT NULL DEFAULT 0'}))if(!userColumns.has(column))db.exec(`ALTER TABLE users ADD COLUMN ${column} ${type}`);
   if(!db.prepare('PRAGMA table_info(sessions)').all().some(column=>column.name==='admin_expires'))db.exec('ALTER TABLE sessions ADD COLUMN admin_expires INTEGER NOT NULL DEFAULT 0');
@@ -154,30 +156,33 @@ export function createApp({ databasePath = resolve(ROOT,'data/vesper.sqlite'), o
     const reply=(status,value)=>{response.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});response.end(json(value));};
     try{
       const url=new URL(request.url,origin),path=url.pathname,method=request.method;
+      if(path.startsWith('/api/oauth/github/')){rateLimit(request,'oauth',30);await oauth.handle(request,response,url);return;}
       if(!path.startsWith('/api/')){
         if(method!=='GET')fail(405,'Méthode non autorisée.');const routes={'/':'index.html','/app.mjs':'app.mjs','/crypto.mjs':'crypto.mjs','/voice.mjs':'voice.mjs','/styles.css':'styles.css','/search.mjs':'search.mjs','/notifications.mjs':'notifications.mjs','/mfa-qrcode.mjs':'mfa-qrcode.mjs','/vendor/qrcode.mjs':'vendor/qrcode.mjs'};
         const file=routes[path];if(!file)fail(404,'Page introuvable.');const contents=await readFile(resolve(ROOT,'public',file));response.writeHead(200,{'Content-Type':file.endsWith('.css')?'text/css; charset=utf-8':file.endsWith('.mjs')?'text/javascript; charset=utf-8':'text/html; charset=utf-8','Cache-Control':'no-cache'});response.end(contents);return;
       }
       if(method!=='GET' && !allowedOrigins.has(request.headers.origin))fail(403,'Origine non autorisée.');
       if(method!=='GET' && !request.headers['content-type']?.startsWith('application/json'))fail(415,'JSON requis.');
-      if(path==='/api/config'&&method==='GET'){reply(200,{authDomain,mailConfigured:!!sendVerificationEmail,verificationRequired:requireEmailVerification,registrationOpen:admin.settings().registrationOpen});return;}
+      if(path==='/api/config'&&method==='GET'){reply(200,{authDomain,mailConfigured:!!sendVerificationEmail,githubConfigured:oauth.enabled,verificationRequired:requireEmailVerification,registrationOpen:admin.settings().registrationOpen});return;}
       if(path==='/api/auth/register' && method==='POST'){
         if(!admin.settings().registrationOpen)fail(403,'Les inscriptions sont temporairement fermées.');
         rateLimit(request,'auth',10);const input=await body(request),username=text(input.username,24).toLowerCase(),address=email(input.email);if(!/^[a-z0-9_]{3,24}$/.test(username))fail(400,'Identifiant : 3 à 24 lettres, chiffres ou _.');
+        if(requireEmailVerification&&oauth.enabled&&!sendVerificationEmail&&!oauth.proof(request))fail(403,'Continuez avec GitHub pour vérifier votre identité avant de créer votre compte.');
+        oauth.check(request,null,address);
         if(typeof input.authSecret!=='string'||!/^[A-Za-z0-9+/]{43}=$/.test(input.authSecret))fail(400,'Secret d’authentification invalide.');
         validatePublicKey(input.publicKey);validatePublicKey(input.signingKey);
         if(!input.vault||input.vault.v!==1||typeof input.vault.ciphertext!=='string'||input.vault.ciphertext.length>6000||!/^.{24}$/.test(input.vault.salt||'')||!/^.{16}$/.test(input.vault.iv||''))fail(400,'Coffre de clés invalide.');
         const salt=randomBytes(16).toString('hex'),hash=(await hashPassword(input.authSecret,salt,64,{N:32768,r:8,p:1,maxmem:67108864})).toString('hex'),userId=id();
         if(get('SELECT id FROM users WHERE username=?',username))fail(409,'Cet identifiant est déjà utilisé.');
         if(get('SELECT id FROM users WHERE email=?',address))fail(409,'Cette adresse e-mail est déjà associée à un compte.');
-        run('INSERT INTO users(id,username,password_hash,salt,profile,public_key,signing_key,vault,email,onboarding_seen) VALUES(?,?,?,?,?,?,?,?,?,0)',userId,username,hash,salt,json({displayName:text(input.displayName||username,40),bio:'',avatar:'✦',accent:'#8b7cf8',banner:'aurora',status:'online'}),json(input.publicKey),json(input.signingKey),json(input.vault),address);
+        transaction(()=>{run('INSERT INTO users(id,username,password_hash,salt,profile,public_key,signing_key,vault,email,onboarding_seen) VALUES(?,?,?,?,?,?,?,?,?,0)',userId,username,hash,salt,json({displayName:text(input.displayName||username,40),bio:'',avatar:'✦',accent:'#8b7cf8',banner:'aurora',status:'online'}),json(input.publicKey),json(input.signingKey),json(input.vault),address);oauth.bind(request,response,get('SELECT * FROM users WHERE id=?',userId),address);});
         let verificationSent=false;if(sendVerificationEmail)try{await issueVerification(get('SELECT * FROM users WHERE id=?',userId));verificationSent=true;}catch{}
         sessionCookie(userId,response);reply(201,{...state(userId),verificationSent});return;
       }
       if(path==='/api/auth/login'&&method==='POST'){
         rateLimit(request,'auth',10);const input=await body(request),username=text(input.username,24).toLowerCase();if(typeof input.authSecret!=='string'||input.authSecret.length!==44)fail(400,'Secret d’authentification invalide.');
         const user=get('SELECT * FROM users WHERE username=?',username);const hash=await hashPassword(input.authSecret,user?.salt||'invalid-user-salt',64,{N:32768,r:8,p:1,maxmem:67108864});
-        if(!user||!timingSafeEqual(hash,Buffer.from(user.password_hash,'hex')))fail(401,'Identifiant ou mot de passe incorrect.');const freshUser=get('SELECT * FROM users WHERE id=?',user.id);if(freshUser.suspended)fail(403,'Ce compte est suspendu.');if(freshUser.mfa_secret)consumeMfa(freshUser,input.otp);sessionCookie(user.id,response);reply(200,state(user.id));return;
+        if(!user||!timingSafeEqual(hash,Buffer.from(user.password_hash,'hex')))fail(401,'Identifiant ou mot de passe incorrect.');const freshUser=get('SELECT * FROM users WHERE id=?',user.id);if(freshUser.suspended)fail(403,'Ce compte est suspendu.');oauth.check(request,freshUser,freshUser.email);if(freshUser.mfa_secret)consumeMfa(freshUser,input.otp);oauth.bind(request,response,freshUser,freshUser.email);sessionCookie(user.id,response);reply(200,state(user.id));return;
       }
       const session=authenticate(request),userId=session.user_id;
       if(method!=='GET')rateLimit(request,'write',120);
@@ -309,7 +314,7 @@ export function createApp({ databasePath = resolve(ROOT,'data/vesper.sqlite'), o
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
   const port=Number(process.env.PORT||4180),host=process.env.HOST||'127.0.0.1',origin=process.env.ORIGIN||`http://localhost:${port}`;
-  const app=createApp({origin,databasePath:process.env.DATA_FILE||resolve(ROOT,'data/vesper.sqlite'),iceServers:process.env.ICE_SERVERS?parse(process.env.ICE_SERVERS):[],sendVerificationEmail:resendMailer({apiKey:process.env.RESEND_API_KEY,from:process.env.MAIL_FROM}),adminCode:process.env.ADMIN_PANEL_CODE||null,...(process.env.REQUIRE_EMAIL_VERIFICATION==='1'?{requireEmailVerification:true}:{})});
+  const app=createApp({origin,databasePath:process.env.DATA_FILE||resolve(ROOT,'data/vesper.sqlite'),iceServers:process.env.ICE_SERVERS?parse(process.env.ICE_SERVERS):[],sendVerificationEmail:resendMailer({apiKey:process.env.RESEND_API_KEY,from:process.env.MAIL_FROM}),github:{clientId:process.env.GITHUB_CLIENT_ID,clientSecret:process.env.GITHUB_CLIENT_SECRET},adminCode:process.env.ADMIN_PANEL_CODE||null,...(process.env.REQUIRE_EMAIL_VERIFICATION==='1'?{requireEmailVerification:true}:{})});
   app.server.listen(port,host,()=>console.log(`Vesper → ${origin}\nDonnées locales : ${resolve(ROOT,'data')}\nCtrl+C pour arrêter.`));
   let stopping=false;
   const stop=async()=>{if(stopping)return;stopping=true;const deadline=setTimeout(()=>process.exit(1),10000);deadline.unref();await app.close();process.exit(0);};

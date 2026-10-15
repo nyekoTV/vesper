@@ -1,5 +1,13 @@
 # Vesper
 
+## Connexion GitHub (0.5)
+
+GitHub peut vérifier l’identité et l’adresse e-mail sans Resend. Cliquer « Continuer avec GitHub », autoriser la lecture de l’adresse vérifiée, puis créer ou saisir le mot de passe Vesper qui protège le coffre de chiffrement. L’A2F Vesper reste requise si activée. Un compte lié à GitHub exige ce parcours aux connexions suivantes. Pour lier un compte existant, revenir à l’onglet Connexion après GitHub et utiliser son identifiant et son mot de passe existants ; l’adresse doit correspondre. Aucun rôle admin n’est accordé par le nom ou par GitHub.
+
+Configurer `GITHUB_CLIENT_ID` et `GITHUB_CLIENT_SECRET` côté serveur. Callback exact pour Railway : `https://vesper-production-9796.up.railway.app/api/oauth/github/callback`. Utiliser une application OAuth distincte pour localhost, avec son callback local. Les secrets ne doivent pas être placés dans Git ou le navigateur. Le bouton est masqué si GitHub n’est pas configuré.
+
+Le parcours utilise state lié au navigateur, PKCE S256, cookies HttpOnly et preuves temporaires de dix minutes consommées une seule fois. Le serveur vérifie l’identifiant GitHub stable et une adresse marquée vérifiée par GitHub. Les jetons GitHub ne sont pas stockés dans la base. L’autorisation ne demande pas l’accès aux dépôts. Les comptes locaux et leurs coffres sont conservés. Tests avec fournisseur simulé ; un essai GitHub réel nécessite la configuration de l’application OAuth.
+
 Une mini plateforme de communication indépendante, inspirée de l'organisation de Discord. Version locale fonctionnelle avec un vrai serveur, des comptes et une base SQLite. Ce n'est pas une simple maquette HTML et ce n'est pas un service hébergé.
 
 ## Nouveautés 0.4 : sons, paramètres, QR code et administration
