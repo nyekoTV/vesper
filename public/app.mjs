@@ -50,6 +50,21 @@ $('auth-form').onsubmit=async event=>{
 };
 $('auth-form').elements.username.value=localStorage.getItem('vesper-last-user')||'';
 switchAuth(false);
+async function prepareGithub(){
+  const config=await api('/api/config');$('github-auth').hidden=!config.githubConfigured;
+  $('github-login').onclick=()=>{location.href='/api/oauth/github/start';};
+  if(!config.githubConfigured)return;
+  const result=new URLSearchParams(location.search).get('github');
+  if(result){history.replaceState(null,'',location.pathname);}
+  if(result==='error'){$('auth-error').textContent='La vérification GitHub a échoué ou a été annulée. Réessayez avec un compte ayant une adresse vérifiée.';return;}
+  const proof=await api('/api/oauth/github/status');if(!proof.ready)return;
+  switchAuth(!proof.username);const form=$('auth-form');
+  if(proof.username)form.elements.username.value=proof.username;
+  form.elements.email.value=proof.email;form.elements.email.readOnly=true;
+  $('github-login').textContent='Changer de compte GitHub ↗';
+  $('github-note').textContent='GitHub vérifié : '+proof.email+'. '+(proof.username?'Saisissez votre mot de passe Vesper et votre A2F si activée.':'Choisissez un identifiant et un mot de passe Vesper pour chiffrer vos messages.');
+}
+prepareGithub().catch(error=>{$('auth-error').textContent=error.message;});
 function communityAllowed(){return !app.state?.account.verificationRequired||app.state.account.emailVerified;}
 function connectEvents(){
   app.events?.close();app.events=new EventSource('/api/events');
