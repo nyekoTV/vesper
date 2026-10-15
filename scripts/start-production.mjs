@@ -7,7 +7,7 @@ export function validateProduction(env){
   try{origin=new URL(env.ORIGIN);}catch{throw new Error('ORIGIN doit contenir l’origine HTTPS publique de Vesper.');}
   if(origin.protocol!=='https:'||origin.origin!==env.ORIGIN)throw new Error('ORIGIN doit être une origine HTTPS exacte, sans chemin ni slash final.');
   if(!env.DATA_FILE||!isAbsolute(env.DATA_FILE))throw new Error('DATA_FILE doit pointer vers une base sur le volume persistant (chemin absolu).');
-  if(!env.RESEND_API_KEY||!env.MAIL_FROM)throw new Error('Configurer RESEND_API_KEY et MAIL_FROM pour vérifier les comptes en ligne.');
+  if(!(env.RESEND_API_KEY&&env.MAIL_FROM)&&!(env.GITHUB_CLIENT_ID&&env.GITHUB_CLIENT_SECRET))throw new Error('Configurer GitHub OAuth (GITHUB_CLIENT_ID et GITHUB_CLIENT_SECRET) ou le service mail pour vérifier les comptes en ligne.');
   if(env.RAILWAY_ENVIRONMENT_ID&&env.RAILWAY_VOLUME_MOUNT_PATH!=='/data')throw new Error('Monter un volume Railway sur /data avant de démarrer.');
   if(env.RAILWAY_ENVIRONMENT_ID&&env.DATA_FILE!=='/data/vesper.sqlite')throw new Error('Sur Railway, utiliser DATA_FILE=/data/vesper.sqlite.');
 }
