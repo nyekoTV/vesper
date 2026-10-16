@@ -1,5 +1,14 @@
 # Vesper
 
+## Audio 0.7.1
+
+Paramètres → Audio et vocal : gain du microphone 0–300 %, annulation d’écho, réduction du bruit, niveau automatique et filtre passe-haut de voix à 80 Hz. Les préférences sont locales à cet appareil et s’appliquent pendant l’appel. Écho/bruit/niveau automatique utilisent les capacités du navigateur ; les options non prises en charge sont désactivées. Un compresseur atténue les pointes après amplification. Le flux traité est envoyé aux pairs, sans retour local dans le casque. Le flux brut et les ressources Web Audio sont arrêtés au départ du vocal.
+
+Couper le casque coupe aussi le microphone brut et le flux transmis. La réactivation restaure son état précédent : un micro déjà coupé reste coupé. Réactiver le micro est bloqué tant que le casque est coupé.
+
+Validation : 14 tests audio ciblés réussis ; appel WebRTC réel local avec flux synthétiques traité, 1042 et 998 octets audio reçus. Réglages vérifiés dans le navigateur sans capture de microphone personnel. L’efficacité acoustique réelle des filtres dépend du matériel et du navigateur.
+
+
 ## Messages 0.7
 
 L’indicateur « écrit… » fonctionne dans les salons textuels et conversations privées : signal d’activité limité, sans texte du brouillon, arrêt après pause, envoi, perte de focus ou changement de salon, expiration au plus tard après six secondes. Les comptes invisibles ne publient pas leur activité. Les permissions de salon sont vérifiées côté serveur.
