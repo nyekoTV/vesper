@@ -5,7 +5,8 @@ export class NotificationSounds {
   set enabled(value){this.storage.setItem('vesper-notification-sound',value?'on':'off');}
   get volume(){const value=Number(this.storage.getItem('vesper-notification-volume')??'.35');return Number.isFinite(value)?Math.max(0,Math.min(1,value)):.35;}
   set volume(value){this.storage.setItem('vesper-notification-volume',String(Math.max(0,Math.min(1,Number(value)))));}
-  async unlock(){try{if(!this.Context)return false;this.context??=new this.Context();if(this.context.state==='suspended')await this.context.resume();return this.context.state==='running';}catch{return false;}}
+  async unlock(){try{if(!this.Context)return false;if(!this.context){this.context=new this.Context();const saved=this.storage.getItem('vesper-audio-output')||'';if(saved&&this.context.setSinkId)await this.context.setSinkId(saved).catch(()=>{});}if(this.context.state==='suspended')await this.context.resume();return this.context.state==='running';}catch{return false;}}
+  async setOutputDevice(id){if(!this.Context)return;this.context??=new this.Context();if(!this.context.setSinkId){if(id)throw new Error('La sortie des sons d’interface est gérée par le système dans ce navigateur.');return;}await this.context.setSinkId(id||'');}
   async receive(event,{me,status}){
     if(!shouldNotify(event,{me,status,enabled:this.enabled})||this.seen.has(event.messageId))return false;
     this.seen.add(event.messageId);if(this.seen.size>256)this.seen.delete(this.seen.values().next().value);
