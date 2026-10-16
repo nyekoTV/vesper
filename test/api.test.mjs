@@ -102,12 +102,31 @@ test('complete authenticated communication and access control',async t=>{
     assert.equal((await request('/api/voice/kick',{actor:alice,data:{channelId:voiceChannel,userId:bob.id}})).status,200);
     assert.equal((await request('/api/voice/signal',{actor:alice,data:signal})).status,403);
   });
+  await t.test('typing is ephemeral and scoped to authorized text channels',async()=>{
+    assert.equal((await request('/api/channels/'+privateChannel+'/typing',{actor:carol,data:{active:true}})).status,403);
+    assert.equal((await request('/api/channels/'+voiceChannel+'/typing',{actor:bob,data:{active:true}})).status,400);
+    const controller=new AbortController(),response=await fetch(base+'/api/events',{headers:{Cookie:bob.cookie},signal:controller.signal}),reader=response.body.getReader();
+    async function eventOf(type){let buffer='';while(true){const part=await reader.read();if(part.done)throw Error('Event stream ended');buffer+=new TextDecoder().decode(part.value);let end;while((end=buffer.indexOf('\n\n'))>=0){const block=buffer.slice(0,end);buffer=buffer.slice(end+2);if(block.startsWith('data: ')){const value=JSON.parse(block.slice(6));if(value.type===type)return value;}}}}
+    try{await request('/api/channels/'+privateChannel+'/typing',{actor:alice,data:{active:true}});const started=await eventOf('typing');assert.equal(started.channelId,privateChannel);assert.equal(started.userId,alice.id);assert.equal(started.active,true);assert.ok(started.expires>Date.now());assert.equal(started.text,undefined);
+      await request('/api/channels/'+privateChannel+'/typing',{actor:alice,data:{active:false}});assert.equal((await eventOf('typing')).active,false);
+      const original=application.db.prepare('SELECT profile FROM users WHERE id=?').get(alice.id).profile;application.db.prepare('UPDATE users SET profile=? WHERE id=?').run(JSON.stringify({...JSON.parse(original),status:'invisible'}),alice.id);
+      await request('/api/channels/'+textChannel+'/typing',{actor:alice,data:{active:true}});assert.equal((await eventOf('typing')).active,false);application.db.prepare('UPDATE users SET profile=? WHERE id=?').run(original,alice.id);
+    }finally{controller.abort();await reader.cancel().catch(()=>{});}
+  });
+  await t.test('reactions remain encrypted, signed and private, with one set per user',async()=>{
+    const roster=(await request('/api/channels/'+privateChannel+'/recipients',{actor:bob})).result;
+    const content={text:'',kind:'reactions',messageId,emojis:['💜','👍']},payload=await sealMessage(content,{id:crypto.randomUUID(),channelId:privateChannel,authorId:bob.id},roster.users,bob.keys);
+    const data={payload,rosterHash:roster.hash};assert.equal((await request('/api/messages/'+messageId+'/reactions',{actor:carol,data})).status,403);assert.equal((await request('/api/messages/'+messageId+'/reactions',{actor:alice,data})).status,400);assert.equal((await request('/api/messages/'+messageId+'/reactions',{actor:bob,data})).status,200);
+    const row=(await request('/api/channels/'+privateChannel+'/messages/'+messageId,{actor:alice})).result;assert.equal(row.reactions.length,1);assert.deepEqual((await openMessage(row.reactions[0].payload,alice.id,alice.keys,bob.identity.signingKey)).emojis,content.emojis);
+    assert.ok(!application.db.prepare('SELECT payload FROM message_reactions WHERE message_id=?').get(messageId).payload.includes('💜'));
+    const removed=await sealMessage({...content,emojis:[]},{id:crypto.randomUUID(),channelId:privateChannel,authorId:bob.id},roster.users,bob.keys);assert.equal((await request('/api/messages/'+messageId+'/reactions',{actor:bob,data:{payload:removed,rosterHash:roster.hash}})).status,200);assert.equal(application.db.prepare('SELECT COUNT(*) n FROM message_reactions WHERE message_id=?').get(messageId).n,1);
+  });
   await t.test('persistence across restart and session revocation',async()=>{
     await application.close();application=createApp({databasePath:join(directory,'test.sqlite'),origin,requireEmailVerification:false});await new Promise(resolve=>application.server.listen(0,'127.0.0.1',resolve));base='http://127.0.0.1:'+application.server.address().port;
     assert.equal((await request('/api/channels/'+privateChannel+'/messages',{actor:bob})).result.messages.length,1);
     assert.equal((await request('/api/state',{actor:alice})).result.account.onboardingSeen,true);
     assert.equal((await request('/api/auth/logout',{actor:bob,data:{}})).status,200);assert.equal((await request('/api/state',{actor:bob})).status,401);
     const login=await request('/api/auth/login',{data:{username:'bob',authSecret:bob.authSecret}});assert.equal(login.status,200);bob.cookie=login.cookie;
-    assert.equal((await request('/api/messages/'+messageId,{actor:alice,data:{},method:'DELETE'})).status,200);assert.equal((await request('/api/channels/'+privateChannel+'/messages',{actor:bob})).result.messages.length,0);
+    assert.equal((await request('/api/messages/'+messageId,{actor:alice,data:{},method:'DELETE'})).status,200);assert.equal((await request('/api/channels/'+privateChannel+'/messages',{actor:bob})).result.messages.length,0);assert.equal(application.db.prepare('SELECT COUNT(*) n FROM message_reactions WHERE message_id=?').get(messageId).n,0);
   });
 });
