@@ -1,24 +1,28 @@
+import {microphoneSettings,microphoneConstraints,microphoneGraph} from './microphone.mjs';
 import {signStatement,verifyStatement} from './crypto.mjs';
 export class VoiceRoom {
-  constructor({api,me,identity,verifyPeer,onChange,onError,onSound=()=>{}}){Object.assign(this,{api,me,identity,verifyPeer,onChange,onError,onSound});this.peers=new Map();this.channelId=null;this.muted=false;this.deafened=false;this.joining=false;this.volume=1;this.outputId='';this.pending=[];this.seenSignals=new Set();this.speaking=new Set();this.meters=new Map();this.epoch=0;}
+  constructor({api,me,identity,verifyPeer,onChange,onError,onSound=()=>{}}){Object.assign(this,{api,me,identity,verifyPeer,onChange,onError,onSound});this.peers=new Map();this.channelId=null;this.muted=false;this.deafened=false;this.joining=false;this.volume=1;this.outputId='';this.pending=[];this.seenSignals=new Set();this.speaking=new Set();this.meters=new Map();this.epoch=0;this.microphone=microphoneSettings();}
   async join(channelId,deviceId){
     if(!navigator.mediaDevices?.getUserMedia)throw new Error('Le micro nécessite localhost ou HTTPS.');if(this.channelId===channelId||this.joining)return;
     await this.leave();this.joining=true;const epoch=this.epoch;
     try{
-      const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true,...(deviceId?{deviceId:{exact:deviceId}}:{})}});
-      if(epoch!==this.epoch){stream.getTracks().forEach(t=>t.stop());return;}this.stream=stream;
+      const stream=await navigator.mediaDevices.getUserMedia({audio:{...microphoneConstraints(this.microphone),...(deviceId?{deviceId:{exact:deviceId}}:{})}});
+      if(epoch!==this.epoch){stream.getTracks().forEach(t=>t.stop());return;}this.rawStream=stream;this.microphoneGraph=microphoneGraph(stream,this.microphone);this.stream=this.microphoneGraph?.stream||stream;if(this.microphoneGraph)await this.microphoneGraph.context.resume();if(epoch!==this.epoch)return;
       const state=await this.api('/api/voice/join',{channelId});if(epoch!==this.epoch)return;
       this.channelId=channelId;this.iceServers=state.iceServers||[];this.hasRelay=this.iceServers.some(s=>(Array.isArray(s.urls)?s.urls:[s.urls]).some(url=>/^turns?:/.test(url)));
-      this.muted=false;this.deafened=false;this.watchLevel(this.me,stream);this.sync(state.users);this.joining=false;
+      this.muted=false;this.deafened=false;this.watchLevel(this.me,this.stream);this.sync(state.users);this.joining=false;
       for(const event of this.pending.splice(0))await this.signal(event);this.onChange();this.onSound('join');
-    }catch(error){this.joining=false;this.pending=[];if(this.channelId)await this.leave();else{this.stream?.getTracks().forEach(t=>t.stop());this.stream=null;}throw error;}finally{if(epoch===this.epoch)this.joining=false;}
+    }catch(error){this.joining=false;this.pending=[];if(this.channelId)await this.leave();else await this.releaseMicrophone();throw error;}finally{if(epoch===this.epoch)this.joining=false;}
   }
   async leave(){
     const joined=this.channelId;this.epoch++;this.channelId=null;this.joining=false;this.pending=[];clearTimeout(this.levelTimer);this.levelTimer=null;
     for(const id of [...this.peers.keys()])this.removePeer(id);for(const meter of this.meters.values())meter.source.disconnect();this.meters.clear();this.speaking.clear();
-    this.stream?.getTracks().forEach(t=>t.stop());this.stream=null;if(this.levelContext){await this.levelContext.close().catch(()=>{});this.levelContext=null;}
+    await this.releaseMicrophone();if(this.levelContext){await this.levelContext.close().catch(()=>{});this.levelContext=null;}
     if(joined)try{await this.api('/api/voice/leave',{});}catch{}this.onChange();if(joined)this.onSound('leave');
   }
+  async releaseMicrophone(){this.rawStream?.getTracks().forEach(t=>t.stop());this.rawStream=null;this.stream?.getTracks().forEach(t=>t.stop());this.stream=null;const graph=this.microphoneGraph;this.microphoneGraph=null;if(graph)await graph.close();}
+  applyMute(){for(const stream of [this.stream,this.rawStream])stream?.getAudioTracks().forEach(t=>t.enabled=!this.muted);}
+  async setMicrophoneSettings(input){const next=microphoneSettings({...this.microphone,...input}),changed=JSON.stringify(microphoneConstraints(next))!==JSON.stringify(microphoneConstraints(this.microphone));if(changed)for(const track of this.rawStream?.getAudioTracks()||[])await track.applyConstraints(microphoneConstraints(next));this.microphone=next;this.microphoneGraph?.update(next);}
   removePeer(id){const entry=this.peers.get(id);if(!entry)return;clearTimeout(entry.restartTimer);clearTimeout(entry.connectTimer);entry.connection.onconnectionstatechange=null;entry.connection.onicecandidate=null;entry.connection.close();entry.audio.srcObject=null;entry.audio.remove();this.peers.delete(id);this.meters.get(id)?.source.disconnect();this.meters.delete(id);this.speaking.delete(id);}
   watchLevel(id,stream){
     const Context=globalThis.AudioContext||globalThis.webkitAudioContext;if(!Context||this.meters.has(id))return;
@@ -43,7 +47,7 @@ export class VoiceRoom {
     if(this.peers.get(userId)!==entry||!this.channelId||entry.connection.connectionState==='connected')return;
     entry.status='failed';this.onChange();
   },20000);}
-  async reconnect(relayOnly=false){const channelId=this.channelId;if(!channelId)return;const deviceId=this.stream?.getAudioTracks()[0]?.getSettings?.().deviceId;this.forceRelay=!!relayOnly;await this.leave();await this.join(channelId,deviceId);}
+  async reconnect(relayOnly=false){const channelId=this.channelId;if(!channelId)return;const deviceId=(this.rawStream||this.stream)?.getAudioTracks()[0]?.getSettings?.().deviceId;this.forceRelay=!!relayOnly;await this.leave();await this.join(channelId,deviceId);}
   async diagnostics(){
     const report={relayConfigured:!!this.hasRelay,relayForced:!!this.forceRelay,microphone:this.stream?.getAudioTracks().map(t=>({enabled:t.enabled,state:t.readyState}))||[],peers:[]};
     for(const entry of this.peers.values()){
@@ -75,10 +79,10 @@ export class VoiceRoom {
       if(signed.type==='offer'){await connection.setLocalDescription(await connection.createAnswer());await this.send(event.from,{type:'answer',sdp:connection.localDescription.toJSON()});}
     });
   }
-  mute(){if(!this.channelId)return;this.muted=!this.muted;this.stream?.getAudioTracks().forEach(t=>t.enabled=!this.muted);this.onChange();this.onSound(this.muted?'mute':'unmute');}
-  deafen(){if(!this.channelId)return;this.deafened=!this.deafened;for(const e of this.peers.values())e.audio.muted=this.deafened;this.onChange();this.onSound(this.deafened?'deafen':'undeafen');}
+  mute(){if(!this.channelId||this.deafened)return;this.muted=!this.muted;this.applyMute();this.onChange();this.onSound(this.muted?'mute':'unmute');}
+  deafen(){if(!this.channelId)return;if(!this.deafened){this.mutedBeforeDeafen=this.muted;this.muted=true;}else this.muted=!!this.mutedBeforeDeafen;this.deafened=!this.deafened;this.applyMute();for(const e of this.peers.values())e.audio.muted=this.deafened;this.onChange();this.onSound(this.deafened?'deafen':'undeafen');}
   setVolume(value){const amount=Number(value);this.volume=Number.isFinite(amount)?Math.max(0,Math.min(1,amount)):1;for(const e of this.peers.values())e.audio.volume=this.volume;}
   async applyOutput(audio){if(typeof audio.setSinkId!=='function'){if(this.outputId)throw new Error('Ce navigateur utilise la sortie audio du système.');return;}await audio.setSinkId(this.outputId);}
   async setOutputDevice(id){const previous=this.outputId;this.outputId=id||'';try{for(const e of this.peers.values())await this.applyOutput(e.audio);}catch(error){this.outputId=previous;for(const e of this.peers.values())await this.applyOutput(e.audio).catch(()=>{});throw error;}}
-  async activateAudio(){await this.levelContext?.resume();for(const e of this.peers.values()){await e.audio.play();e.autoplayBlocked=false;}this.onChange();}
+  async activateAudio(){await this.microphoneGraph?.context.resume();await this.levelContext?.resume();for(const e of this.peers.values()){await e.audio.play();e.autoplayBlocked=false;}this.onChange();}
 }
