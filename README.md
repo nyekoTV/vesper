@@ -1,5 +1,10 @@
 # Vesper
 
+## Présentation et navigation 0.7.2
+
+Croix de fermeture centrée, contrôles du composeur et du vocal alignés, espacements des profils et paramètres harmonisés, retours à la ligne sur petit écran. Une conversation s’ouvre sur ses derniers messages, même en cache ; charger un historique plus ancien conserve la position de lecture. La saisie d’un caractère imprimable depuis la conversation active le champ et conserve ce premier caractère. Les autres champs, fenêtres modales, sélections de texte et raccourcis clavier sont respectés.
+
+
 ## Audio 0.7.1
 
 Paramètres → Audio et vocal : gain du microphone 0–300 %, annulation d’écho, réduction du bruit, niveau automatique et filtre passe-haut de voix à 80 Hz. Les préférences sont locales à cet appareil et s’appliquent pendant l’appel. Écho/bruit/niveau automatique utilisent les capacités du navigateur ; les options non prises en charge sont désactivées. Un compresseur atténue les pointes après amplification. Le flux traité est envoyé aux pairs, sans retour local dans le casque. Le flux brut et les ressources Web Audio sont arrêtés au départ du vocal.
