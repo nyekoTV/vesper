@@ -10,7 +10,7 @@ import { canonical } from './public/crypto.mjs';
 import {normalizeEmail,encodeBase32,encryptMfa,decryptMfa,matchTotp,resendMailer} from './security.mjs';
 import {installAdmin} from './admin.mjs';
 import {githubIdentity} from './oauth.mjs';
-import {defaultIceServers,voiceIceServers} from './voice-config.mjs';
+import {defaultIceServers,voiceIceServers,cloudflareTurn} from './voice-config.mjs';
 const hashPassword = promisify(scrypt), ROOT = dirname(fileURLToPath(import.meta.url));
 const json = value => JSON.stringify(value), parse = value => JSON.parse(value);
 const fail = (status, message) => { const error = new Error(message); error.status = status; throw error; };
@@ -18,7 +18,7 @@ const text = (value, max = 100) => { if (typeof value !== 'string' || !value.tri
 const id = () => randomUUID(), now = () => Date.now();
 const permissions = ['manageChannels','manageRoles','moderateMessages'];
 const publicUser = row => ({ id: row.id, username: row.username, ...parse(row.profile), publicKey: parse(row.public_key), signingKey: parse(row.signing_key) });
-export function createApp({ databasePath = resolve(ROOT,'data/vesper.sqlite'), origin = 'http://localhost:4180', iceServers = defaultIceServers, turnUrls=[], turnSecret='' , secureCookies = origin.startsWith('https:'),sendVerificationEmail=null,requireEmailVerification=!!sendVerificationEmail||!['localhost','127.0.0.1'].includes(new URL(origin).hostname),adminCode=null,github={} } = {}) {
+export function createApp({ databasePath = resolve(ROOT,'data/vesper.sqlite'), origin = 'http://localhost:4180', iceServers = defaultIceServers, turnUrls=[], turnSecret='' , getRelayServers=null, secureCookies = origin.startsWith('https:'),sendVerificationEmail=null,requireEmailVerification=!!sendVerificationEmail||!['localhost','127.0.0.1'].includes(new URL(origin).hostname),adminCode=null,github={} } = {}) {
   if (databasePath !== ':memory:') mkdirSync(dirname(databasePath), { recursive: true });
   const db = new DatabaseSync(databasePath);
   db.exec(`PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;
@@ -298,7 +298,7 @@ export function createApp({ databasePath = resolve(ROOT,'data/vesper.sqlite'), o
         }notifyChannel(channel,{type:'messages',channelId:channel.id,messageId:message.id,action:method==='DELETE'?'deleted':'updated'});reply(200,{ok:true});return;
       }
       if(path==='/api/voice/join'&&method==='POST'){
-        const input=await body(request),channel=channelAccess(input.channelId,userId);if(channel.kind!=='voice')fail(400,'Salon vocal requis.');const users=voice.get(channel.id)||new Map();if(users.size>=6&&!users.has(userId))fail(409,'Ce salon vocal est complet (6 participants).');leaveVoice(userId);users.set(userId,{token:session.token});voice.set(channel.id,users);voiceState(channel.id);reply(200,{users:[...users.keys()],iceServers:voiceIceServers({servers:iceServers,turnUrls,turnSecret,userId})});return;
+        const input=await body(request),channel=channelAccess(input.channelId,userId);if(channel.kind!=='voice')fail(400,'Salon vocal requis.');const relay=getRelayServers?await getRelayServers():[];channelAccess(channel.id,userId);if(!get('SELECT token FROM sessions WHERE token=? AND expires>?',session.token,now()))fail(401,'Session expirée.');const users=voice.get(channel.id)||new Map();if(users.size>=6&&!users.has(userId))fail(409,'Ce salon vocal est complet (6 participants).');leaveVoice(userId);users.set(userId,{token:session.token});voice.set(channel.id,users);voiceState(channel.id);reply(200,{users:[...users.keys()],iceServers:[...voiceIceServers({servers:iceServers,turnUrls,turnSecret,userId}),...relay]});return;
       }
       if(path==='/api/voice/leave'&&method==='POST'){leaveVoice(userId);reply(200,{ok:true});return;}
       if(path==='/api/voice/signal'&&method==='POST'){
@@ -316,7 +316,7 @@ export function createApp({ databasePath = resolve(ROOT,'data/vesper.sqlite'), o
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
   const port=Number(process.env.PORT||4180),host=process.env.HOST||'127.0.0.1',origin=process.env.ORIGIN||`http://localhost:${port}`;
-  const app=createApp({origin,databasePath:process.env.DATA_FILE||resolve(ROOT,'data/vesper.sqlite'),iceServers:process.env.ICE_SERVERS?parse(process.env.ICE_SERVERS):defaultIceServers,turnUrls:process.env.TURN_URLS?parse(process.env.TURN_URLS):[],turnSecret:process.env.TURN_SHARED_SECRET||'',sendVerificationEmail:resendMailer({apiKey:process.env.RESEND_API_KEY,from:process.env.MAIL_FROM}),github:{clientId:process.env.GITHUB_CLIENT_ID,clientSecret:process.env.GITHUB_CLIENT_SECRET},adminCode:process.env.ADMIN_PANEL_CODE||null,...(process.env.REQUIRE_EMAIL_VERIFICATION==='1'?{requireEmailVerification:true}:{})});
+  const app=createApp({origin,databasePath:process.env.DATA_FILE||resolve(ROOT,'data/vesper.sqlite'),iceServers:process.env.ICE_SERVERS?parse(process.env.ICE_SERVERS):defaultIceServers,turnUrls:process.env.TURN_URLS?parse(process.env.TURN_URLS):[],turnSecret:process.env.TURN_SHARED_SECRET||'',getRelayServers:cloudflareTurn({keyId:process.env.CLOUDFLARE_TURN_KEY_ID,apiToken:process.env.CLOUDFLARE_TURN_API_TOKEN}),sendVerificationEmail:resendMailer({apiKey:process.env.RESEND_API_KEY,from:process.env.MAIL_FROM}),github:{clientId:process.env.GITHUB_CLIENT_ID,clientSecret:process.env.GITHUB_CLIENT_SECRET},adminCode:process.env.ADMIN_PANEL_CODE||null,...(process.env.REQUIRE_EMAIL_VERIFICATION==='1'?{requireEmailVerification:true}:{})});
   app.server.listen(port,host,()=>console.log(`Vesper → ${origin}\nDonnées locales : ${resolve(ROOT,'data')}\nCtrl+C pour arrêter.`));
   let stopping=false;
   const stop=async()=>{if(stopping)return;stopping=true;const deadline=setTimeout(()=>process.exit(1),10000);deadline.unref();await app.close();process.exit(0);};

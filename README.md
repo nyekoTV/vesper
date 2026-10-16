@@ -1,5 +1,12 @@
 # Vesper
 
+## Correctif vocal 0.6.1
+
+Cloudflare Realtime TURN : ajouter `CLOUDFLARE_TURN_KEY_ID` et `CLOUDFLARE_TURN_API_TOKEN` dans les variables Railway. Le jeton reste au serveur ; seuls les identifiants temporaires sont envoyés aux participants autorisés qui rejoignent un vocal. Une erreur du fournisseur est affichée avant de rejoindre. Les connexions bloquées sortent de « Connexion… » après 20 secondes, avec un bouton Reconnecter le vocal. Sans relais configuré, les connexions entre certains réseaux restent impossibles.
+
+Dans le shell du conteneur Railway (pas `railway run` sur le PC), exécuter `node scripts/admin-user.mjs grant nyeko`. Seul le compte exact existant est promu ; la commande ne crée aucun utilisateur. Si aucun code admin existe, un code aléatoire est créé et affiché une seule fois dans ce terminal, à conserver en privé. Sinon le code existant est conservé. Se reconnecter ensuite dans Vesper → Paramètres → Administration.
+
+
 ## Nouveautés 0.6 : conversations, vocal, profils et GIF
 
 Les événements de message mettent à jour le message concerné sans vider l’historique, redéclencher le déchiffrement complet, remettre la conversation en bas ou interrompre les GIF déjà affichés. Les messages modifiés et supprimés sont identifiés dans les événements SSE. Les pages d’historique déjà chargées restent en mémoire. Un nouveau point API lit un seul message, avec les mêmes contrôles d’accès que le salon.

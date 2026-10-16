@@ -10,3 +10,4 @@
 !public/**
 !scripts/
 !scripts/start-production.mjs
+!scripts/admin-user.mjs
