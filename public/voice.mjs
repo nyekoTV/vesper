@@ -30,16 +30,30 @@ export class VoiceRoom {
   }
   peer(userId){
     if(this.peers.has(userId))return this.peers.get(userId);
-    const connection=new RTCPeerConnection({iceServers:this.iceServers||[],iceCandidatePoolSize:2}),audio=document.createElement('audio');audio.autoplay=true;audio.volume=this.volume;audio.muted=this.deafened;audio.setAttribute('playsinline','');document.body.append(audio);
-    const entry={connection,audio,candidates:[],status:'connecting',queue:Promise.resolve(),offered:false,restarts:0};this.peers.set(userId,entry);this.watchConnection(userId,entry);
+    const connection=new RTCPeerConnection({iceServers:this.iceServers||[],iceCandidatePoolSize:2,iceTransportPolicy:this.forceRelay?'relay':'all'}),audio=document.createElement('audio');audio.autoplay=true;audio.volume=this.volume;audio.muted=this.deafened;audio.setAttribute('playsinline','');document.body.append(audio);
+    const entry={connection,audio,candidates:[],status:'connecting',queue:Promise.resolve(),offered:false,restarts:0,iceErrors:new Set()};this.peers.set(userId,entry);this.watchConnection(userId,entry);
     if(this.outputId)this.applyOutput(audio).catch(this.onError);
     for(const track of this.stream.getTracks())connection.addTrack(track,this.stream);
+    connection.onicecandidateerror=event=>{entry.iceErrors.add(Number(event.errorCode));};
     connection.ontrack=event=>{if(!this.channelId||this.peers.get(userId)!==entry)return;const stream=event.streams[0]||new MediaStream([event.track]);audio.srcObject=stream;this.watchLevel(userId,stream);audio.play().catch(()=>{entry.autoplayBlocked=true;this.onChange();});};
     connection.onicecandidate=event=>{if(event.candidate&&this.channelId)this.send(userId,{type:'candidate',candidate:event.candidate.toJSON()}).catch(this.onError);};
     connection.onconnectionstatechange=()=>{entry.status=connection.connectionState;if(entry.status==='connected'){clearTimeout(entry.connectTimer);clearTimeout(entry.restartTimer);entry.restartTimer=null;entry.restarts=0;}else if(['failed','disconnected'].includes(entry.status)&&entry.restarts<2&&!entry.restartTimer){entry.restartTimer=setTimeout(()=>{entry.restartTimer=null;if(!this.channelId||this.peers.get(userId)!==entry||entry.status==='connected')return;entry.restarts++;entry.status='connecting';this.watchConnection(userId,entry);this.onChange();if(this.me<userId)this.offer(userId,true).catch(this.onError);else this.send(userId,{type:'restart'}).catch(this.onError);},entry.status==='failed'?300:3500);}this.onChange();};return entry;
   }
-  watchConnection(userId,entry){clearTimeout(entry.connectTimer);entry.connectTimer=setTimeout(()=>{if(this.peers.get(userId)!==entry||!this.channelId||entry.connection.connectionState==='connected')return;entry.status='failed';this.onChange();},20000);}
-  async reconnect(){const channelId=this.channelId;if(!channelId)return;const deviceId=this.stream?.getAudioTracks()[0]?.getSettings?.().deviceId;await this.leave();await this.join(channelId,deviceId);}
+  watchConnection(userId,entry){clearTimeout(entry.connectTimer);entry.connectTimer=setTimeout(()=>{
+    if(this.peers.get(userId)!==entry||!this.channelId||entry.connection.connectionState==='connected')return;
+    entry.status='failed';this.onChange();
+  },20000);}
+  async reconnect(relayOnly=false){const channelId=this.channelId;if(!channelId)return;const deviceId=this.stream?.getAudioTracks()[0]?.getSettings?.().deviceId;this.forceRelay=!!relayOnly;await this.leave();await this.join(channelId,deviceId);}
+  async diagnostics(){
+    const report={relayConfigured:!!this.hasRelay,relayForced:!!this.forceRelay,microphone:this.stream?.getAudioTracks().map(t=>({enabled:t.enabled,state:t.readyState}))||[],peers:[]};
+    for(const entry of this.peers.values()){
+      const connection=entry.connection,stats=await connection.getStats(),row={connection:connection.connectionState,ice:connection.iceConnectionState,gathering:connection.iceGatheringState,signaling:connection.signalingState,localDescription:!!connection.localDescription,remoteDescription:!!connection.remoteDescription,localCandidates:{},remoteCandidates:{},iceErrorCodes:[...entry.iceErrors],audioSent:0,audioReceived:0};
+      stats.forEach(stat=>{if(stat.type==='local-candidate'||stat.type==='remote-candidate'){const target=stat.type==='local-candidate'?row.localCandidates:row.remoteCandidates;target[stat.candidateType]=(target[stat.candidateType]||0)+1;}
+        if(stat.type==='transport'){row.dtls=stat.dtlsState;const pair=stats.get(stat.selectedCandidatePairId);if(pair){const local=stats.get(pair.localCandidateId),remote=stats.get(pair.remoteCandidateId);row.selectedPair={state:pair.state,localType:local?.candidateType,remoteType:remote?.candidateType,protocol:local?.protocol,relayProtocol:local?.relayProtocol};}}
+        if(stat.kind==='audio'||stat.mediaType==='audio'){if(stat.type==='inbound-rtp')row.audioReceived+=stat.bytesReceived||0;if(stat.type==='outbound-rtp')row.audioSent+=stat.bytesSent||0;}
+      });report.peers.push(row);
+    }return report;
+  }
   enqueue(entry,task){const result=entry.queue.then(task);entry.queue=result.catch(error=>this.onError(error));return result;}
   offer(userId,restart=false){const entry=this.peer(userId),channelId=this.channelId;if(entry.offered&&!restart)return Promise.resolve();entry.offered=true;return this.enqueue(entry,async()=>{if(this.channelId!==channelId||this.peers.get(userId)!==entry)return;await entry.connection.setLocalDescription(await entry.connection.createOffer(restart?{iceRestart:true}:{}));await this.send(userId,{type:'offer',sdp:entry.connection.localDescription.toJSON()});});}
   async send(to,signal){const channelId=this.channelId;if(!channelId)return;await this.verifyPeer(to);if(this.channelId!==channelId)return;const signed={...signal,nonce:crypto.randomUUID()},signature=await signStatement({channelId,from:this.me,to,signal:signed},this.identity);await this.api('/api/voice/signal',{channelId,to,signal:{...signed,signature}});}
