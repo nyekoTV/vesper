@@ -81,7 +81,8 @@ test('complete authenticated communication and access control',async t=>{
     try{const roster=(await request('/api/channels/'+privateChannel+'/recipients',{actor:alice})).result,id=crypto.randomUUID(),payload=await sealMessage({text:'Notification privée'},{id,channelId:privateChannel,authorId:alice.id},roster.users,alice.keys);
       assert.equal((await request('/api/channels/'+privateChannel+'/messages',{actor:alice,data:{payload,rosterHash:roster.hash}})).status,201);
       const event=await nextMessageEvent();assert.equal(event.action,'created');assert.equal(event.messageId,id);assert.equal(event.authorId,alice.id);assert.equal(event.channelId,privateChannel);assert.equal(event.payload,undefined);
-      assert.equal((await request('/api/messages/'+id,{actor:alice,data:{},method:'DELETE'})).status,200);assert.equal((await nextMessageEvent()).action,undefined);
+      const single=await request('/api/channels/'+privateChannel+'/messages/'+id,{actor:bob});assert.equal(single.status,200);assert.equal(single.result.id,id);assert.equal((await request('/api/channels/'+privateChannel+'/messages/'+id,{actor:carol})).status,403);
+      assert.equal((await request('/api/messages/'+id,{actor:alice,data:{},method:'DELETE'})).status,200);const removed=await nextMessageEvent();assert.equal(removed.action,'deleted');assert.equal(removed.messageId,id);assert.equal((await request('/api/channels/'+privateChannel+'/messages/'+id,{actor:bob})).status,404);
     }finally{clearTimeout(timer);await reader.cancel();controller.abort();}
   });
   await t.test('private conversations cannot be joined or expanded through invitations',async()=>{
