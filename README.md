@@ -1,5 +1,12 @@
 # Vesper
 
+## GIF 0.7.3
+
+Bouton GIF plus visible et sélecteur avec réactions locales, liens de recherche Tenor/GIPHY et import par lien de page ou URL GIF directe des deux fournisseurs. Pas de clé API nécessaire : la recherche externe s’ouvre chez le fournisseur, puis l’utilisateur colle son lien. Import de fichiers conservé, 512 Ko maximum. Les pages Tenor qui refusent la récupération nécessitent un lien direct ou le fichier.
+
+Le serveur récupère le GIF public sélectionné ; le navigateur chiffre ses octets avant l’envoi dans la conversation. Les destinataires ne contactent pas le fournisseur. Import authentifié, contrôle d’origine, limite de débit, domaines HTTPS autorisés vérifiés à chaque redirection, limite de temps et de taille.
+
+
 ## Présentation et navigation 0.7.2
 
 Croix de fermeture centrée, contrôles du composeur et du vocal alignés, espacements des profils et paramètres harmonisés, retours à la ligne sur petit écran. Une conversation s’ouvre sur ses derniers messages, même en cache ; charger un historique plus ancien conserve la position de lecture. La saisie d’un caractère imprimable depuis la conversation active le champ et conserve ce premier caractère. Les autres champs, fenêtres modales, sélections de texte et raccourcis clavier sont respectés.

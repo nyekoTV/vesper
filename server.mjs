@@ -1,3 +1,4 @@
+import {importGif} from './gif-import.mjs';
 import http from 'node:http';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync,readFileSync,writeFileSync,existsSync } from 'node:fs';
@@ -187,6 +188,7 @@ export function createApp({ databasePath = resolve(ROOT,'data/vesper.sqlite'), o
         if(!user||!timingSafeEqual(hash,Buffer.from(user.password_hash,'hex')))fail(401,'Identifiant ou mot de passe incorrect.');const freshUser=get('SELECT * FROM users WHERE id=?',user.id);if(freshUser.suspended)fail(403,'Ce compte est suspendu.');oauth.check(request,freshUser,freshUser.email);if(freshUser.mfa_secret)consumeMfa(freshUser,input.otp);oauth.bind(request,response,freshUser,freshUser.email);sessionCookie(user.id,response);reply(200,state(user.id));return;
       }
       const session=authenticate(request),userId=session.user_id;
+      if(path==='/api/gifs/import'&&method==='POST'){rateLimit(request,'gif-import',12);const input=await body(request);try{reply(200,await importGif(text(input.url,2000)));}catch(error){fail(400,error.name==='TimeoutError'?'Le fournisseur met trop de temps à répondre. Réessayez.':error.message);}return;}
       if(method!=='GET')rateLimit(request,'write',120);
       if(path==='/api/state'&&method==='GET'){reply(200,state(userId));return;}
       if(path==='/api/onboarding/complete'&&method==='POST'){run('UPDATE users SET onboarding_seen=1 WHERE id=?',userId);reply(200,{ok:true});return;}
