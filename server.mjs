@@ -10,6 +10,7 @@ import { canonical } from './public/crypto.mjs';
 import {normalizeEmail,encodeBase32,encryptMfa,decryptMfa,matchTotp,resendMailer} from './security.mjs';
 import {installAdmin} from './admin.mjs';
 import {githubIdentity} from './oauth.mjs';
+import {defaultIceServers,voiceIceServers} from './voice-config.mjs';
 const hashPassword = promisify(scrypt), ROOT = dirname(fileURLToPath(import.meta.url));
 const json = value => JSON.stringify(value), parse = value => JSON.parse(value);
 const fail = (status, message) => { const error = new Error(message); error.status = status; throw error; };
@@ -17,7 +18,7 @@ const text = (value, max = 100) => { if (typeof value !== 'string' || !value.tri
 const id = () => randomUUID(), now = () => Date.now();
 const permissions = ['manageChannels','manageRoles','moderateMessages'];
 const publicUser = row => ({ id: row.id, username: row.username, ...parse(row.profile), publicKey: parse(row.public_key), signingKey: parse(row.signing_key) });
-export function createApp({ databasePath = resolve(ROOT,'data/vesper.sqlite'), origin = 'http://localhost:4180', iceServers = [], secureCookies = origin.startsWith('https:'),sendVerificationEmail=null,requireEmailVerification=!!sendVerificationEmail||!['localhost','127.0.0.1'].includes(new URL(origin).hostname),adminCode=null,github={} } = {}) {
+export function createApp({ databasePath = resolve(ROOT,'data/vesper.sqlite'), origin = 'http://localhost:4180', iceServers = defaultIceServers, turnUrls=[], turnSecret='' , secureCookies = origin.startsWith('https:'),sendVerificationEmail=null,requireEmailVerification=!!sendVerificationEmail||!['localhost','127.0.0.1'].includes(new URL(origin).hostname),adminCode=null,github={} } = {}) {
   if (databasePath !== ':memory:') mkdirSync(dirname(databasePath), { recursive: true });
   const db = new DatabaseSync(databasePath);
   db.exec(`PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;
@@ -106,7 +107,7 @@ export function createApp({ databasePath = resolve(ROOT,'data/vesper.sqlite'), o
       const person={...publicUser(peer),friendshipId:friendship.id,online:friendship.status==='accepted'&&streams.has(peer.id)&&parse(peer.profile).status!=='invisible'};
       if(friendship.status==='accepted')friends.push(person);else friendRequests[friendship.recipient_id===userId?'incoming':'outgoing'].push(person);
     }
-    return {me:{...publicUser(me),online:streams.has(userId)},account:{email:me.email,emailVerified:!!me.email_verified,mfaEnabled:!!me.mfa_secret,recoveryCodesRemaining:parse(me.recovery_hashes).length,verificationRequired:requireEmailVerification,mailConfigured:!!sendVerificationEmail,onboardingSeen:!!me.onboarding_seen,administrator:!!me.is_admin},vault:parse(me.vault),spaces,friends,friendRequests,iceServers,instance:admin.settings()};
+    return {me:{...publicUser(me),online:streams.has(userId)},account:{email:me.email,emailVerified:!!me.email_verified,mfaEnabled:!!me.mfa_secret,recoveryCodesRemaining:parse(me.recovery_hashes).length,verificationRequired:requireEmailVerification,mailConfigured:!!sendVerificationEmail,onboardingSeen:!!me.onboarding_seen,administrator:!!me.is_admin},vault:parse(me.vault),spaces,friends,friendRequests,iceServers:voiceIceServers({servers:iceServers,turnUrls,turnSecret,userId}),instance:admin.settings()};
   }
   function roster(channel) {
     const users = all('SELECT u.* FROM users u JOIN members m ON m.user_id=u.id WHERE m.space_id=? ORDER BY u.id',channel.space_id).filter(row=>!row.suspended&&allowed(channel,row.id)).map(publicUser);
@@ -117,7 +118,7 @@ export function createApp({ databasePath = resolve(ROOT,'data/vesper.sqlite'), o
     if (!payload || payload.v!==1 || payload.authorId!==userId || payload.channelId!==channel.id || typeof payload.id!=='string' || !/^[0-9a-f-]{36}$/i.test(payload.id) || (messageId && payload.id!==messageId)) fail(400,'Message chiffré invalide.');
     const recipients=roster(channel);if(recipients.hash!==rosterHash)fail(409,'Les membres ont changé. Réessayez.');
     const base64=(value,max)=>typeof value==='string' && value.length<=max && /^[A-Za-z0-9+/]+={0,2}$/.test(value);
-    if(!base64(payload.iv,16) || Buffer.from(payload.iv,'base64').length!==12 || !base64(payload.ciphertext,240000) || !base64(payload.signature,100))fail(400,'Chiffrement invalide.');
+    if(!base64(payload.iv,16) || Buffer.from(payload.iv,'base64').length!==12 || !base64(payload.ciphertext,1100000) || !base64(payload.signature,100))fail(400,'Chiffrement invalide.');
     validatePublicKey(payload.ephemeral);
     if(!payload.envelopes || canonical(Object.keys(payload.envelopes).sort())!==canonical(recipients.users.map(user=>user.id).sort()))fail(400,'Destinataires invalides.');
     for(const envelope of Object.values(payload.envelopes))if(!envelope || !base64(envelope.iv,16) || Buffer.from(envelope.iv,'base64').length!==12 || !base64(envelope.ciphertext,64) || Buffer.from(envelope.ciphertext,'base64').length!==48)fail(400,'Enveloppe invalide.');
@@ -136,7 +137,7 @@ export function createApp({ databasePath = resolve(ROOT,'data/vesper.sqlite'), o
       return spaceId;
     });
   }
-  async function body(request) { let size=0,chunks=[]; for await(const chunk of request){size+=chunk.length;if(size>350000)fail(413,'Envoi trop volumineux.');chunks.push(chunk);} try{return parse(Buffer.concat(chunks).toString());}catch{fail(400,'Requête JSON invalide.');} }
+  async function body(request) { let size=0,chunks=[]; for await(const chunk of request){size+=chunk.length;if(size>2000000)fail(413,'Envoi trop volumineux.');chunks.push(chunk);} try{return parse(Buffer.concat(chunks).toString());}catch{fail(400,'Requête JSON invalide.');} }
   function authenticate(request) {
     const token=(request.headers.cookie||'').split(';').map(value=>value.trim()).find(value=>value.startsWith('vesper='))?.slice(7);
     const digest=token?createHash('sha256').update(token).digest('hex'):'';
@@ -158,8 +159,8 @@ export function createApp({ databasePath = resolve(ROOT,'data/vesper.sqlite'), o
       const url=new URL(request.url,origin),path=url.pathname,method=request.method;
       if(path.startsWith('/api/oauth/github/')){rateLimit(request,'oauth',30);await oauth.handle(request,response,url);return;}
       if(!path.startsWith('/api/')){
-        if(method!=='GET')fail(405,'Méthode non autorisée.');const routes={'/':'index.html','/app.mjs':'app.mjs','/crypto.mjs':'crypto.mjs','/voice.mjs':'voice.mjs','/styles.css':'styles.css','/search.mjs':'search.mjs','/notifications.mjs':'notifications.mjs','/mfa-qrcode.mjs':'mfa-qrcode.mjs','/vendor/qrcode.mjs':'vendor/qrcode.mjs'};
-        const file=routes[path];if(!file)fail(404,'Page introuvable.');const contents=await readFile(resolve(ROOT,'public',file));response.writeHead(200,{'Content-Type':file.endsWith('.css')?'text/css; charset=utf-8':file.endsWith('.mjs')?'text/javascript; charset=utf-8':'text/html; charset=utf-8','Cache-Control':'no-cache'});response.end(contents);return;
+        if(method!=='GET')fail(405,'Méthode non autorisée.');const routes={'/':'index.html','/app.mjs':'app.mjs','/crypto.mjs':'crypto.mjs','/voice.mjs':'voice.mjs','/styles.css':'styles.css','/search.mjs':'search.mjs','/notifications.mjs':'notifications.mjs','/mfa-qrcode.mjs':'mfa-qrcode.mjs','/vendor/qrcode.mjs':'vendor/qrcode.mjs','/chat-sync.mjs':'chat-sync.mjs','/media.mjs':'media.mjs'};
+        const file=routes[path]||(/^\/gifs\/(hello|love|party|gg|thinking|laugh|coffee|sleep|wow|thanks)\.gif$/.test(path)?path.slice(1):null);if(!file)fail(404,'Page introuvable.');const contents=await readFile(resolve(ROOT,'public',file));response.writeHead(200,{'Content-Type':file.endsWith('.gif')?'image/gif':file.endsWith('.css')?'text/css; charset=utf-8':file.endsWith('.mjs')?'text/javascript; charset=utf-8':'text/html; charset=utf-8','Cache-Control':'no-cache'});response.end(contents);return;
       }
       if(method!=='GET' && !allowedOrigins.has(request.headers.origin))fail(403,'Origine non autorisée.');
       if(method!=='GET' && !request.headers['content-type']?.startsWith('application/json'))fail(415,'JSON requis.');
@@ -284,6 +285,7 @@ export function createApp({ databasePath = resolve(ROOT,'data/vesper.sqlite'), o
         }notifySpace(spaceId);reply(200,{ok:true});return;
       }
       if((match=path.match(/^\/api\/channels\/([^/]+)\/recipients$/))&&method==='GET'){const channel=channelAccess(match[1],userId);reply(200,roster(channel));return;}
+      if((match=path.match(/^\/api\/channels\/([^/]+)\/messages\/([^/]+)$/))&&method==='GET'){const channel=channelAccess(match[1],userId),row=get('SELECT * FROM messages WHERE id=? AND channel_id=?',match[2],channel.id);if(!row)fail(404,'Message introuvable.');reply(200,{...row,payload:parse(row.payload),author:publicUser(get('SELECT * FROM users WHERE id=?',row.author_id))});return;}
       if((match=path.match(/^\/api\/channels\/([^/]+)\/messages$/))&&['GET','POST'].includes(method)){
         const channel=channelAccess(match[1],userId);if(channel.kind!=='text')fail(400,'Utilisez un salon textuel.');
         if(method==='GET'){const before=Number(url.searchParams.get('before')||Number.MAX_SAFE_INTEGER);if(!Number.isSafeInteger(before)||before<1)fail(400,'Pagination invalide.');const rows=all('SELECT * FROM messages WHERE channel_id=? AND seq<? ORDER BY seq DESC LIMIT 51',channel.id,before);reply(200,{messages:rows.slice(0,50).reverse().map(row=>({...row,payload:parse(row.payload),author:publicUser(get('SELECT * FROM users WHERE id=?',row.author_id))})),hasMore:rows.length>50});return;}
@@ -293,15 +295,15 @@ export function createApp({ databasePath = resolve(ROOT,'data/vesper.sqlite'), o
         const message=get('SELECT * FROM messages WHERE id=?',match[1]);if(!message)fail(404,'Message introuvable.');const channel=channelAccess(message.channel_id,userId);
         if(method==='DELETE'){if(message.author_id!==userId)requirePermission(channel.space_id,userId,'moderateMessages');run('DELETE FROM messages WHERE id=?',message.id);}else{
           const input=await body(request);if('pinned' in input){requirePermission(channel.space_id,userId,'moderateMessages');run('UPDATE messages SET pinned=? WHERE id=?',input.pinned?1:0,message.id);}else{if(message.author_id!==userId)fail(403,'Seul l’auteur peut modifier ce message.');validatePayload(input.payload,userId,channel,input.rosterHash,message.id);run('UPDATE messages SET payload=?,edited=? WHERE id=?',json(input.payload),now(),message.id);}
-        }notifyChannel(channel,{type:'messages',channelId:channel.id});reply(200,{ok:true});return;
+        }notifyChannel(channel,{type:'messages',channelId:channel.id,messageId:message.id,action:method==='DELETE'?'deleted':'updated'});reply(200,{ok:true});return;
       }
       if(path==='/api/voice/join'&&method==='POST'){
-        const input=await body(request),channel=channelAccess(input.channelId,userId);if(channel.kind!=='voice')fail(400,'Salon vocal requis.');const users=voice.get(channel.id)||new Map();if(users.size>=6&&!users.has(userId))fail(409,'Ce salon vocal est complet (6 participants).');leaveVoice(userId);users.set(userId,{token:session.token});voice.set(channel.id,users);voiceState(channel.id);reply(200,{users:[...users.keys()],iceServers});return;
+        const input=await body(request),channel=channelAccess(input.channelId,userId);if(channel.kind!=='voice')fail(400,'Salon vocal requis.');const users=voice.get(channel.id)||new Map();if(users.size>=6&&!users.has(userId))fail(409,'Ce salon vocal est complet (6 participants).');leaveVoice(userId);users.set(userId,{token:session.token});voice.set(channel.id,users);voiceState(channel.id);reply(200,{users:[...users.keys()],iceServers:voiceIceServers({servers:iceServers,turnUrls,turnSecret,userId})});return;
       }
       if(path==='/api/voice/leave'&&method==='POST'){leaveVoice(userId);reply(200,{ok:true});return;}
       if(path==='/api/voice/signal'&&method==='POST'){
         const input=await body(request),channel=channelAccess(input.channelId,userId),users=voice.get(channel.id);if(!users?.has(userId)||!users.has(input.to)||input.to===userId)fail(403,'Destinataire vocal non autorisé.');
-        if(!input.signal||json(input.signal).length>24000||!['offer','answer','candidate'].includes(input.signal.type)||typeof input.signal.nonce!=='string'||input.signal.nonce.length!==36)fail(400,'Signal invalide.');
+        if(!input.signal||json(input.signal).length>24000||!['offer','answer','candidate','restart'].includes(input.signal.type)||typeof input.signal.nonce!=='string'||input.signal.nonce.length!==36)fail(400,'Signal invalide.');
         const {signature,...signal}=input.signal;let valid=false;try{valid=verify('sha256',Buffer.from(canonical({channelId:channel.id,from:userId,to:input.to,signal})),{key:createPublicKey({key:parse(get('SELECT signing_key FROM users WHERE id=?',userId).signing_key),format:'jwk'}),dsaEncoding:'ieee-p1363'},Buffer.from(signature,'base64'));}catch{}
         if(!valid)fail(400,'Signature du signal invalide.');send(input.to,{type:'signal',channelId:channel.id,from:userId,signal:input.signal});reply(200,{ok:true});return;
       }
@@ -314,7 +316,7 @@ export function createApp({ databasePath = resolve(ROOT,'data/vesper.sqlite'), o
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
   const port=Number(process.env.PORT||4180),host=process.env.HOST||'127.0.0.1',origin=process.env.ORIGIN||`http://localhost:${port}`;
-  const app=createApp({origin,databasePath:process.env.DATA_FILE||resolve(ROOT,'data/vesper.sqlite'),iceServers:process.env.ICE_SERVERS?parse(process.env.ICE_SERVERS):[],sendVerificationEmail:resendMailer({apiKey:process.env.RESEND_API_KEY,from:process.env.MAIL_FROM}),github:{clientId:process.env.GITHUB_CLIENT_ID,clientSecret:process.env.GITHUB_CLIENT_SECRET},adminCode:process.env.ADMIN_PANEL_CODE||null,...(process.env.REQUIRE_EMAIL_VERIFICATION==='1'?{requireEmailVerification:true}:{})});
+  const app=createApp({origin,databasePath:process.env.DATA_FILE||resolve(ROOT,'data/vesper.sqlite'),iceServers:process.env.ICE_SERVERS?parse(process.env.ICE_SERVERS):defaultIceServers,turnUrls:process.env.TURN_URLS?parse(process.env.TURN_URLS):[],turnSecret:process.env.TURN_SHARED_SECRET||'',sendVerificationEmail:resendMailer({apiKey:process.env.RESEND_API_KEY,from:process.env.MAIL_FROM}),github:{clientId:process.env.GITHUB_CLIENT_ID,clientSecret:process.env.GITHUB_CLIENT_SECRET},adminCode:process.env.ADMIN_PANEL_CODE||null,...(process.env.REQUIRE_EMAIL_VERIFICATION==='1'?{requireEmailVerification:true}:{})});
   app.server.listen(port,host,()=>console.log(`Vesper → ${origin}\nDonnées locales : ${resolve(ROOT,'data')}\nCtrl+C pour arrêter.`));
   let stopping=false;
   const stop=async()=>{if(stopping)return;stopping=true;const deadline=setTimeout(()=>process.exit(1),10000);deadline.unref();await app.close();process.exit(0);};

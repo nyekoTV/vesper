@@ -5,6 +5,7 @@
 !admin.mjs
 !security.mjs
 !oauth.mjs
+!voice-config.mjs
 !public/
 !public/**
 !scripts/

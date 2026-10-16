@@ -1,5 +1,19 @@
 # Vesper
 
+## Nouveautés 0.6 : conversations, vocal, profils et GIF
+
+Les événements de message mettent à jour le message concerné sans vider l’historique, redéclencher le déchiffrement complet, remettre la conversation en bas ou interrompre les GIF déjà affichés. Les messages modifiés et supprimés sont identifiés dans les événements SSE. Les pages d’historique déjà chargées restent en mémoire. Un nouveau point API lit un seul message, avec les mêmes contrôles d’accès que le salon.
+
+Le vocal utilise des serveurs STUN par défaut, traite les signaux par pair dans l’ordre et tente une reconnexion ICE après une interruption. L’interface présente des cartes de participants, une bordure verte quand une voix est détectée, les commandes micro/écoute/raccrochage et un accès aux réglages audio. Paramètres → Audio et vocal permet de choisir une sortie casque/haut-parleurs sur les navigateurs compatibles. Les sons d’interface suivent la sortie choisie lorsque Web Audio le permet aussi ; sinon ils utilisent la sortie système. Aucun nom d’appareil ni autorisation micro n’est inventé.
+
+Pour les réseaux qui bloquent le pair à pair, configurer un relais coturn avec `TURN_URLS` (tableau JSON) et `TURN_SHARED_SECRET`. Le serveur génère alors des identifiants temporaires par utilisateur, valables une heure, et ne transmet jamais le secret partagé. STUN seul ne garantit pas la connexion entre tous les réseaux. Un service TURN extérieur n’est pas inclus ni provisionné par cette version.
+
+Le bouton GIF ouvre dix réactions animées originales, filtrables, servies par Vesper, avec import d’un GIF personnel jusqu’à 512 Ko. Les octets du GIF sont chiffrés dans le message, et le destinataire l’affiche sans contacter un fournisseur externe. L’affichage automatique des GIF reçus peut être désactivé avec Réduire les animations. Il n’y a pas de recherche Giphy/Tenor ni de clé API tierce requise. Les autres pièces jointes gardent leur limite de 48 Ko.
+
+Les mini-profils sont plus compacts : bannière, présence, bio, rôle, message privé et espaces en commun. Modération et empreinte d’identité sont regroupées dans des rubriques repliables. Le profil personnel donne accès au statut, à la personnalisation et aux paramètres. Les boutons ont un retour visuel à l’appui, respectant la réduction des animations.
+
+Validation : 44 tests automatisés passent. Dans le navigateur, un appel entre deux pairs WebRTC réels a reçu des octets audio dans les deux sens avec des sources synthétiques, via la signalisation signée Vesper ; aucun microphone personnel utilisé. Envoi et réception de messages, GIF, stabilité des éléments déjà affichés, profil compact et réglages audio vérifiés sur une base de test distincte. Aucun test TURN extérieur ni appel entre deux réseaux physiques distincts n’a été effectué.
+
 ## Connexion GitHub (0.5)
 
 GitHub peut vérifier l’identité et l’adresse e-mail sans Resend. Cliquer « Continuer avec GitHub », autoriser la lecture de l’adresse vérifiée, puis créer ou saisir le mot de passe Vesper qui protège le coffre de chiffrement. L’A2F Vesper reste requise si activée. Un compte lié à GitHub exige ce parcours aux connexions suivantes. Pour lier un compte existant, revenir à l’onglet Connexion après GitHub et utiliser son identifiant et son mot de passe existants ; l’adresse doit correspondre. Aucun rôle admin n’est accordé par le nom ou par GitHub.
