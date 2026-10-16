@@ -1,5 +1,16 @@
 # Vesper
 
+## Messages 0.7
+
+L’indicateur « écrit… » fonctionne dans les salons textuels et conversations privées : signal d’activité limité, sans texte du brouillon, arrêt après pause, envoi, perte de focus ou changement de salon, expiration au plus tard après six secondes. Les comptes invisibles ne publient pas leur activité. Les permissions de salon sont vérifiées côté serveur.
+
+Saisir `@` propose les membres du salon ; cliquer ou utiliser Tab pour compléter. Les mentions exactes sont cliquables et celles du compte courant sont mises en évidence. Aucun envoi à tous les membres via @everyone n’est ajouté.
+
+Le bouton de réaction d’un message propose huit emojis. Chaque compte publie son propre ensemble de réactions chiffré et signé, lié au message. Cliquer à nouveau retire la réaction. Le serveur stocke les enveloppes chiffrées ; les compteurs et noms sont calculés après déchiffrement. Les changements sont reçus en temps réel, sans interrompre les GIF montés. Une nouvelle table SQLite est créée sans modifier les messages existants.
+
+Validation : 54 tests réussis, puis vérification navigateur avec deux comptes fictifs pour la saisie, l’autocomplétion, les mentions et la réception d’une réaction chiffrée. Les limites de fichiers existantes sont conservées.
+
+
 ## Correctif vocal 0.6.1
 
 Cloudflare Realtime TURN : ajouter `CLOUDFLARE_TURN_KEY_ID` et `CLOUDFLARE_TURN_API_TOKEN` dans les variables Railway. Le jeton reste au serveur ; seuls les identifiants temporaires sont envoyés aux participants autorisés qui rejoignent un vocal. Une erreur du fournisseur est affichée avant de rejoindre. Les connexions bloquées sortent de « Connexion… » après 20 secondes, avec un bouton Reconnecter le vocal. Sans relais configuré, les connexions entre certains réseaux restent impossibles.

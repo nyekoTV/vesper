@@ -30,6 +30,7 @@ export function createApp({ databasePath = resolve(ROOT,'data/vesper.sqlite'), o
     CREATE TABLE IF NOT EXISTS channels(id TEXT PRIMARY KEY, space_id TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE, name TEXT NOT NULL, topic TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL, private INTEGER NOT NULL DEFAULT 0, access TEXT NOT NULL DEFAULT '[]');
     CREATE TABLE IF NOT EXISTS messages(seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL, channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE, author_id TEXT NOT NULL REFERENCES users(id), payload TEXT NOT NULL, created INTEGER NOT NULL, edited INTEGER, pinned INTEGER NOT NULL DEFAULT 0);
     CREATE INDEX IF NOT EXISTS messages_channel ON messages(channel_id,seq);
+    CREATE TABLE IF NOT EXISTS message_reactions(message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,user_id TEXT NOT NULL REFERENCES users(id),payload TEXT NOT NULL,PRIMARY KEY(message_id,user_id));
     CREATE TABLE IF NOT EXISTS invites(token TEXT PRIMARY KEY, space_id TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE, expires INTEGER NOT NULL, uses INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS email_challenges(user_id TEXT PRIMARY KEY REFERENCES users(id),code_hash TEXT NOT NULL,expires INTEGER NOT NULL,tries INTEGER NOT NULL,sent INTEGER NOT NULL);
@@ -66,7 +67,7 @@ export function createApp({ databasePath = resolve(ROOT,'data/vesper.sqlite'), o
     try{await sendVerificationEmail({to:user.email,code});}catch{run('DELETE FROM email_challenges WHERE user_id=?',user.id);fail(503,'L’e-mail n’a pas pu être envoyé. Réessayez plus tard.');}
   }
   const transaction = action => { db.exec('BEGIN'); try { const result = action(); db.exec('COMMIT'); return result; } catch(error) { db.exec('ROLLBACK'); throw error; } };
-  const streams = new Map(), voice = new Map(), attempts = new Map();let closing=false;
+  const streams = new Map(), voice = new Map(), attempts = new Map(), typingPulses=new Map();let closing=false;
   const allowedOrigins = new Set([origin]);
   const configuredUrl = new URL(origin);
   if(configuredUrl.protocol==='http:'&&['localhost','127.0.0.1'].includes(configuredUrl.hostname)){
@@ -159,7 +160,7 @@ export function createApp({ databasePath = resolve(ROOT,'data/vesper.sqlite'), o
       const url=new URL(request.url,origin),path=url.pathname,method=request.method;
       if(path.startsWith('/api/oauth/github/')){rateLimit(request,'oauth',30);await oauth.handle(request,response,url);return;}
       if(!path.startsWith('/api/')){
-        if(method!=='GET')fail(405,'Méthode non autorisée.');const routes={'/':'index.html','/app.mjs':'app.mjs','/crypto.mjs':'crypto.mjs','/voice.mjs':'voice.mjs','/styles.css':'styles.css','/search.mjs':'search.mjs','/notifications.mjs':'notifications.mjs','/mfa-qrcode.mjs':'mfa-qrcode.mjs','/vendor/qrcode.mjs':'vendor/qrcode.mjs','/chat-sync.mjs':'chat-sync.mjs','/media.mjs':'media.mjs'};
+        if(method!=='GET')fail(405,'Méthode non autorisée.');const routes={'/':'index.html','/app.mjs':'app.mjs','/crypto.mjs':'crypto.mjs','/voice.mjs':'voice.mjs','/styles.css':'styles.css','/search.mjs':'search.mjs','/notifications.mjs':'notifications.mjs','/mfa-qrcode.mjs':'mfa-qrcode.mjs','/vendor/qrcode.mjs':'vendor/qrcode.mjs','/chat-sync.mjs':'chat-sync.mjs','/media.mjs':'media.mjs','/message-features.mjs':'message-features.mjs'};
         const file=routes[path]||(/^\/gifs\/(hello|love|party|gg|thinking|laugh|coffee|sleep|wow|thanks)\.gif$/.test(path)?path.slice(1):null);if(!file)fail(404,'Page introuvable.');const contents=await readFile(resolve(ROOT,'public',file));response.writeHead(200,{'Content-Type':file.endsWith('.gif')?'image/gif':file.endsWith('.css')?'text/css; charset=utf-8':file.endsWith('.mjs')?'text/javascript; charset=utf-8':'text/html; charset=utf-8','Cache-Control':'no-cache'});response.end(contents);return;
       }
       if(method!=='GET' && !allowedOrigins.has(request.headers.origin))fail(403,'Origine non autorisée.');
@@ -284,11 +285,23 @@ export function createApp({ databasePath = resolve(ROOT,'data/vesper.sqlite'), o
           run('UPDATE members SET role_id=? WHERE space_id=? AND user_id=?',role.id,spaceId,targetId);
         }notifySpace(spaceId);reply(200,{ok:true});return;
       }
+      if((match=path.match(/^\/api\/channels\/([^/]+)\/typing$/))&&method==='POST'){
+        const channel=channelAccess(match[1],userId),input=await body(request);if(channel.kind!=='text'||typeof input.active!=='boolean')fail(400,'Indicateur invalide.');
+        const key=userId+':'+channel.id,last=typingPulses.get(key)||0;
+        if(!input.active||now()-last>=1500){typingPulses.set(key,now());const invisible=parse(get('SELECT profile FROM users WHERE id=?',userId).profile).status==='invisible';notifyChannel(channel,{type:'typing',channelId:channel.id,userId,active:input.active&&!invisible,expires:now()+6000});}
+        reply(200,{ok:true});return;
+      }
+      if((match=path.match(/^\/api\/messages\/([^/]+)\/reactions$/))&&method==='POST'){
+        const message=get('SELECT * FROM messages WHERE id=?',match[1]);if(!message)fail(404,'Message introuvable.');const channel=channelAccess(message.channel_id,userId),input=await body(request);
+        validatePayload(input.payload,userId,channel,input.rosterHash);if(input.payload.ciphertext.length>4096)fail(400,'Réaction trop volumineuse.');
+        if(!get('SELECT user_id FROM message_reactions WHERE message_id=? AND user_id=?',message.id,userId)&&get('SELECT COUNT(*) n FROM message_reactions WHERE message_id=?',message.id).n>=100)fail(409,'Limite de réactions atteinte.');
+        run('INSERT OR REPLACE INTO message_reactions VALUES(?,?,?)',message.id,userId,json(input.payload));notifyChannel(channel,{type:'messages',channelId:channel.id,messageId:message.id,action:'updated'});reply(200,{ok:true});return;
+      }
       if((match=path.match(/^\/api\/channels\/([^/]+)\/recipients$/))&&method==='GET'){const channel=channelAccess(match[1],userId);reply(200,roster(channel));return;}
-      if((match=path.match(/^\/api\/channels\/([^/]+)\/messages\/([^/]+)$/))&&method==='GET'){const channel=channelAccess(match[1],userId),row=get('SELECT * FROM messages WHERE id=? AND channel_id=?',match[2],channel.id);if(!row)fail(404,'Message introuvable.');reply(200,{...row,payload:parse(row.payload),author:publicUser(get('SELECT * FROM users WHERE id=?',row.author_id))});return;}
+      if((match=path.match(/^\/api\/channels\/([^/]+)\/messages\/([^/]+)$/))&&method==='GET'){const channel=channelAccess(match[1],userId),row=get('SELECT * FROM messages WHERE id=? AND channel_id=?',match[2],channel.id);if(!row)fail(404,'Message introuvable.');reply(200,{...row,payload:parse(row.payload),author:publicUser(get('SELECT * FROM users WHERE id=?',row.author_id)),reactions:all('SELECT * FROM message_reactions WHERE message_id=?',row.id).map(reaction=>({userId:reaction.user_id,payload:parse(reaction.payload),author:publicUser(get('SELECT * FROM users WHERE id=?',reaction.user_id))}))});return;}
       if((match=path.match(/^\/api\/channels\/([^/]+)\/messages$/))&&['GET','POST'].includes(method)){
         const channel=channelAccess(match[1],userId);if(channel.kind!=='text')fail(400,'Utilisez un salon textuel.');
-        if(method==='GET'){const before=Number(url.searchParams.get('before')||Number.MAX_SAFE_INTEGER);if(!Number.isSafeInteger(before)||before<1)fail(400,'Pagination invalide.');const rows=all('SELECT * FROM messages WHERE channel_id=? AND seq<? ORDER BY seq DESC LIMIT 51',channel.id,before);reply(200,{messages:rows.slice(0,50).reverse().map(row=>({...row,payload:parse(row.payload),author:publicUser(get('SELECT * FROM users WHERE id=?',row.author_id))})),hasMore:rows.length>50});return;}
+        if(method==='GET'){const before=Number(url.searchParams.get('before')||Number.MAX_SAFE_INTEGER);if(!Number.isSafeInteger(before)||before<1)fail(400,'Pagination invalide.');const rows=all('SELECT * FROM messages WHERE channel_id=? AND seq<? ORDER BY seq DESC LIMIT 51',channel.id,before);reply(200,{messages:rows.slice(0,50).reverse().map(row=>({...row,payload:parse(row.payload),author:publicUser(get('SELECT * FROM users WHERE id=?',row.author_id)),reactions:all('SELECT * FROM message_reactions WHERE message_id=?',row.id).map(reaction=>({userId:reaction.user_id,payload:parse(reaction.payload),author:publicUser(get('SELECT * FROM users WHERE id=?',reaction.user_id))}))})),hasMore:rows.length>50});return;}
         const input=await body(request);validatePayload(input.payload,userId,channel,input.rosterHash);if(get('SELECT id FROM messages WHERE id=?',input.payload.id))fail(409,'Message déjà envoyé.');run('INSERT INTO messages(id,channel_id,author_id,payload,created) VALUES(?,?,?,?,?)',input.payload.id,channel.id,userId,json(input.payload),now());notifyChannel(channel,{type:'messages',channelId:channel.id,action:'created',messageId:input.payload.id,authorId:userId});reply(201,{id:input.payload.id});return;
       }
       if((match=path.match(/^\/api\/messages\/([^/]+)$/))&&['PATCH','DELETE'].includes(method)){
@@ -311,7 +324,7 @@ export function createApp({ databasePath = resolve(ROOT,'data/vesper.sqlite'), o
       fail(404,'Route introuvable.');
     }catch(error){if(!response.headersSent)reply(error.status||500,{error:error.status?error.message:'Erreur serveur.'});else response.end();if(!error.status)console.error(error);}
   });
-  const maintenance=setInterval(()=>{run('DELETE FROM sessions WHERE expires<?',now());for(const [key,item] of attempts)if(now()-item.time>120000)attempts.delete(key);for(const [channelId,users]of voice)for(const[userId,entry]of users)if(!get('SELECT token FROM sessions WHERE token=? AND expires>?',entry.token,now())){users.delete(userId);send(userId,{type:'voice-kick'});voiceState(channelId);}},60000);maintenance.unref();
+  const maintenance=setInterval(()=>{run('DELETE FROM sessions WHERE expires<?',now());for(const[key,time]of typingPulses)if(now()-time>6000)typingPulses.delete(key);for(const [key,item] of attempts)if(now()-item.time>120000)attempts.delete(key);for(const [channelId,users]of voice)for(const[userId,entry]of users)if(!get('SELECT token FROM sessions WHERE token=? AND expires>?',entry.token,now())){users.delete(userId);send(userId,{type:'voice-kick'});voiceState(channelId);}},60000);maintenance.unref();
   return {server,db,close:async()=>{closing=true;clearInterval(maintenance);for(const entries of streams.values())for(const entry of entries)entry.response.end();await new Promise(resolve=>server.close(resolve));db.close();}};
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
