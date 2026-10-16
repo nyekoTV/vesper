@@ -6,7 +6,7 @@ import {join} from 'node:path';
 import {createApp} from '../server.mjs';
 import {createIdentity,unlockIdentity,authenticationSecret,sealMessage,openMessage,signStatement} from '../public/crypto.mjs';
 test('complete authenticated communication and access control',async t=>{
-  const directory=await mkdtemp(join(tmpdir(),'vesper-test-')),origin='http://vesper.test';let relayFailure=false;let application=createApp({databasePath:join(directory,'test.sqlite'),origin,requireEmailVerification:false,getRelayServers:async()=>{if(relayFailure)throw Object.assign(new Error('Relais indisponible'),{status:503});return [{urls:'turns:relay.example:443',username:'temporary',credential:'temporary'}];}});
+  const directory=await mkdtemp(join(tmpdir(),'vesper-test-')),origin='http://vesper.test';let relayFailure=false;let application=createApp({databasePath:join(directory,'test.sqlite'),origin,requireEmailVerification:false,klipyApiKey:'test-browser-app-key',getRelayServers:async()=>{if(relayFailure)throw Object.assign(new Error('Relais indisponible'),{status:503});return [{urls:'turns:relay.example:443',username:'temporary',credential:'temporary'}];}});
   await new Promise(resolve=>application.server.listen(0,'127.0.0.1',resolve));let base='http://127.0.0.1:'+application.server.address().port;
   t.after(async()=>{await application.close();await rm(directory,{recursive:true,force:true});});
   async function request(path,{actor,data,method=data===undefined?'GET':'POST',originHeader=origin}={}){const response=await fetch(base+path,{method,headers:{...(data===undefined?{}:{'Content-Type':'application/json',Origin:originHeader}),...(actor?{Cookie:actor.cookie}:{})},...(data===undefined?{}:{body:JSON.stringify(data)})});const result=await response.json();return {status:response.status,result,cookie:response.headers.get('set-cookie')?.split(';')[0],headers:response.headers};}
@@ -15,6 +15,8 @@ test('complete authenticated communication and access control',async t=>{
   const alice=await register('alice'),bob=await register('bob'),carol=await register('carol');let spaceId,textChannel,voiceChannel,privateChannel,messageId;
   await t.test('sessions, CSRF, incorrect credentials and safe profiles',async()=>{
     assert.equal((await request('/api/state')).status,401);
+    assert.equal((await request('/api/gifs/config')).status,401);
+    assert.equal((await request('/api/gifs/config',{actor:alice})).result.key,'test-browser-app-key');
     assert.equal((await request('/api/gifs/import',{data:{url:'https://tenor.com/view/test'}})).status,401);
     assert.equal((await request('/api/gifs/import',{actor:alice,data:{url:'http://127.0.0.1/private'}})).status,400);
     assert.equal((await request('/api/gifs/import',{actor:alice,data:{url:'https://tenor.com/view/test'},originHeader:'https://evil.test'})).status,403);
