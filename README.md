@@ -1,5 +1,14 @@
 # Vesper
 
+## Recherche GIF intégrée 0.7.4
+
+Sélecteur GIF : Explorer (tendances, recherche et pagination KLIPY), Favoris locaux par compte/appareil, réactions Vesper séparées. La recherche attend 450 ms après la saisie et ignore les réponses des recherches précédentes. Les liens d’import et fichiers restent accessibles dans une rubrique repliable.
+
+Créer une application **Vesper** dans https://partner.klipy.com/ → API Keys. Dans Railway → vesper → Variables, ajouter **KLIPY_API_KEY**, puis appliquer le déploiement. La clé d’application est transmise aux navigateurs authentifiés : elle sert à une intégration cliente KLIPY et ne doit pas être un jeton d’administration. Le mode Testing est limité à 100 requêtes/heure selon KLIPY ; demander l’accès Production dans son panneau après validation.
+
+Les appels et médias KLIPY viennent directement du navigateur, avec attribution et URLs de diffusion conservées. Les termes et chargements sont visibles par le fournisseur. Les messages chiffrent la référence au GIF ; ses octets restent hébergés par KLIPY. Aucun proxy/cache média KLIPY n’est créé. Les imports de fichiers et liens Tenor/GIPHY conservent leur fonctionnement antérieur.
+
+
 ## GIF 0.7.3
 
 Bouton GIF plus visible et sélecteur avec réactions locales, liens de recherche Tenor/GIPHY et import par lien de page ou URL GIF directe des deux fournisseurs. Pas de clé API nécessaire : la recherche externe s’ouvre chez le fournisseur, puis l’utilisateur colle son lien. Import de fichiers conservé, 512 Ko maximum. Les pages Tenor qui refusent la récupération nécessitent un lien direct ou le fichier.

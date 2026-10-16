@@ -19,7 +19,7 @@ const text = (value, max = 100) => { if (typeof value !== 'string' || !value.tri
 const id = () => randomUUID(), now = () => Date.now();
 const permissions = ['manageChannels','manageRoles','moderateMessages'];
 const publicUser = row => ({ id: row.id, username: row.username, ...parse(row.profile), publicKey: parse(row.public_key), signingKey: parse(row.signing_key) });
-export function createApp({ databasePath = resolve(ROOT,'data/vesper.sqlite'), origin = 'http://localhost:4180', iceServers = defaultIceServers, turnUrls=[], turnSecret='' , getRelayServers=null, secureCookies = origin.startsWith('https:'),sendVerificationEmail=null,requireEmailVerification=!!sendVerificationEmail||!['localhost','127.0.0.1'].includes(new URL(origin).hostname),adminCode=null,github={} } = {}) {
+export function createApp({ databasePath = resolve(ROOT,'data/vesper.sqlite'), origin = 'http://localhost:4180', iceServers = defaultIceServers, turnUrls=[], turnSecret='' , getRelayServers=null, secureCookies = origin.startsWith('https:'),sendVerificationEmail=null,requireEmailVerification=!!sendVerificationEmail||!['localhost','127.0.0.1'].includes(new URL(origin).hostname),adminCode=null,github={},klipyApiKey=process.env.KLIPY_API_KEY||'' } = {}) {
   if (databasePath !== ':memory:') mkdirSync(dirname(databasePath), { recursive: true });
   const db = new DatabaseSync(databasePath);
   db.exec(`PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;
@@ -155,13 +155,13 @@ export function createApp({ databasePath = resolve(ROOT,'data/vesper.sqlite'), o
   });
   const server=http.createServer(async(request,response)=>{
     response.setHeader('X-Content-Type-Options','nosniff');response.setHeader('Referrer-Policy','no-referrer');response.setHeader('X-Frame-Options','DENY');
-    response.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+    response.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data: https://static.klipy.com https://static1.klipy.com https://static2.klipy.com; media-src 'self' blob:; connect-src 'self' https://api.klipy.com; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
     const reply=(status,value)=>{response.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});response.end(json(value));};
     try{
       const url=new URL(request.url,origin),path=url.pathname,method=request.method;
       if(path.startsWith('/api/oauth/github/')){rateLimit(request,'oauth',30);await oauth.handle(request,response,url);return;}
       if(!path.startsWith('/api/')){
-        if(method!=='GET')fail(405,'Méthode non autorisée.');const routes={'/':'index.html','/app.mjs':'app.mjs','/crypto.mjs':'crypto.mjs','/voice.mjs':'voice.mjs','/styles.css':'styles.css','/search.mjs':'search.mjs','/notifications.mjs':'notifications.mjs','/mfa-qrcode.mjs':'mfa-qrcode.mjs','/vendor/qrcode.mjs':'vendor/qrcode.mjs','/chat-sync.mjs':'chat-sync.mjs','/media.mjs':'media.mjs','/message-features.mjs':'message-features.mjs','/microphone.mjs':'microphone.mjs'};
+        if(method!=='GET')fail(405,'Méthode non autorisée.');const routes={'/':'index.html','/app.mjs':'app.mjs','/crypto.mjs':'crypto.mjs','/voice.mjs':'voice.mjs','/styles.css':'styles.css','/search.mjs':'search.mjs','/notifications.mjs':'notifications.mjs','/mfa-qrcode.mjs':'mfa-qrcode.mjs','/vendor/qrcode.mjs':'vendor/qrcode.mjs','/chat-sync.mjs':'chat-sync.mjs','/media.mjs':'media.mjs','/gif-search.mjs':'gif-search.mjs','/message-features.mjs':'message-features.mjs','/microphone.mjs':'microphone.mjs'};
         const file=routes[path]||(/^\/gifs\/(hello|love|party|gg|thinking|laugh|coffee|sleep|wow|thanks)\.gif$/.test(path)?path.slice(1):null);if(!file)fail(404,'Page introuvable.');const contents=await readFile(resolve(ROOT,'public',file));response.writeHead(200,{'Content-Type':file.endsWith('.gif')?'image/gif':file.endsWith('.css')?'text/css; charset=utf-8':file.endsWith('.mjs')?'text/javascript; charset=utf-8':'text/html; charset=utf-8','Cache-Control':'no-cache'});response.end(contents);return;
       }
       if(method!=='GET' && !allowedOrigins.has(request.headers.origin))fail(403,'Origine non autorisée.');
@@ -188,6 +188,7 @@ export function createApp({ databasePath = resolve(ROOT,'data/vesper.sqlite'), o
         if(!user||!timingSafeEqual(hash,Buffer.from(user.password_hash,'hex')))fail(401,'Identifiant ou mot de passe incorrect.');const freshUser=get('SELECT * FROM users WHERE id=?',user.id);if(freshUser.suspended)fail(403,'Ce compte est suspendu.');oauth.check(request,freshUser,freshUser.email);if(freshUser.mfa_secret)consumeMfa(freshUser,input.otp);oauth.bind(request,response,freshUser,freshUser.email);sessionCookie(user.id,response);reply(200,state(user.id));return;
       }
       const session=authenticate(request),userId=session.user_id;
+      if(path==='/api/gifs/config'&&method==='GET'){reply(200,{provider:'klipy',key:klipyApiKey||null});return;}
       if(path==='/api/gifs/import'&&method==='POST'){rateLimit(request,'gif-import',12);const input=await body(request);try{reply(200,await importGif(text(input.url,2000)));}catch(error){fail(400,error.name==='TimeoutError'?'Le fournisseur met trop de temps à répondre. Réessayez.':error.message);}return;}
       if(method!=='GET')rateLimit(request,'write',120);
       if(path==='/api/state'&&method==='GET'){reply(200,state(userId));return;}
