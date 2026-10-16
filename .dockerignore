@@ -2,6 +2,7 @@
 !Dockerfile
 !package.json
 !server.mjs
+!gif-import.mjs
 !admin.mjs
 !security.mjs
 !oauth.mjs
