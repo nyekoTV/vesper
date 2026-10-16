@@ -15,6 +15,9 @@ test('complete authenticated communication and access control',async t=>{
   const alice=await register('alice'),bob=await register('bob'),carol=await register('carol');let spaceId,textChannel,voiceChannel,privateChannel,messageId;
   await t.test('sessions, CSRF, incorrect credentials and safe profiles',async()=>{
     assert.equal((await request('/api/state')).status,401);
+    assert.equal((await request('/api/gifs/import',{data:{url:'https://tenor.com/view/test'}})).status,401);
+    assert.equal((await request('/api/gifs/import',{actor:alice,data:{url:'http://127.0.0.1/private'}})).status,400);
+    assert.equal((await request('/api/gifs/import',{actor:alice,data:{url:'https://tenor.com/view/test'},originHeader:'https://evil.test'})).status,403);
     assert.equal((await request('/api/spaces',{actor:alice,data:{name:'Blocked'},originHeader:'http://evil.example'})).status,403);
     const wrong=await request('/api/auth/login',{data:{username:'alice',authSecret:await authenticationSecret('wrong-passphrase','alice')}});assert.equal(wrong.status,401);
     assert.match(alice.cookie,/^vesper=/);const profile=await request('/api/profile',{actor:bob,data:{displayName:'Bob ✨',avatar:'🚀',bio:'Bonjour',accent:'#66ddaa',banner:'ocean',status:'away'},method:'PATCH'});assert.equal(profile.status,200);assert.equal(profile.result.displayName,'Bob ✨');assert.equal(profile.result.password_hash,undefined);
