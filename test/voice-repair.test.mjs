@@ -26,6 +26,17 @@ test('voice connection timeout exits the indefinite connecting state',t=>{
   const entry={status:'connecting',connection:{connectionState:'connecting'}};room.peers.set('peer',entry);room.watchConnection('peer',entry);t.mock.timers.tick(20001);assert.equal(entry.status,'failed');assert.equal(changes,1);
   entry.status='connected';entry.connection.connectionState='connected';room.watchConnection('peer',entry);t.mock.timers.tick(20001);assert.equal(entry.status,'connected');
 });
+test('voice diagnostic reports relay and audio without IPs, SDP or credentials',async()=>{
+  const room=new VoiceRoom({});room.hasRelay=true;room.forceRelay=true;
+  const stats=new Map([['local',{type:'local-candidate',candidateType:'relay',address:'private-address',protocol:'udp',relayProtocol:'tls'}],['remote',{type:'remote-candidate',candidateType:'host',address:'other-private-address'}],['pair',{type:'candidate-pair',state:'succeeded',localCandidateId:'local',remoteCandidateId:'remote'}],['transport',{type:'transport',dtlsState:'connected',selectedCandidatePairId:'pair'}],['audio',{type:'inbound-rtp',kind:'audio',bytesReceived:321}]]);
+  room.peers.set('private-user-id',{iceErrors:new Set([701]),connection:{connectionState:'connected',iceConnectionState:'connected',iceGatheringState:'complete',signalingState:'stable',localDescription:{sdp:'private-sdp'},remoteDescription:{},getStats:async()=>stats}});
+  const result=await room.diagnostics();assert.equal(result.peers[0].audioReceived,321);assert.equal(result.peers[0].selectedPair.localType,'relay');assert.equal(result.relayForced,true);
+  assert.ok(!/private-address|private-user-id|private-sdp/.test(JSON.stringify(result)));
+});
+test('retry can force TURN while preserving the chosen microphone',async()=>{
+  const room=new VoiceRoom({});room.channelId='room';room.stream={getAudioTracks:()=>[{getSettings:()=>({deviceId:'micro'})}]};let left=false;
+  room.leave=async()=>{left=true;};room.join=async(channel,device)=>{assert.ok(left);assert.equal(channel,'room');assert.equal(device,'micro');assert.equal(room.forceRelay,true);};await room.reconnect(true);
+});
 test('console grant targets only the exact account and preserves existing admin code',async()=>{
   const app=createApp({databasePath:':memory:',origin:'http://localhost:4180',requireEmailVerification:false});
   try{
