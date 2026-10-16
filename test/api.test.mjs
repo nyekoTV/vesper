@@ -6,7 +6,7 @@ import {join} from 'node:path';
 import {createApp} from '../server.mjs';
 import {createIdentity,unlockIdentity,authenticationSecret,sealMessage,openMessage,signStatement} from '../public/crypto.mjs';
 test('complete authenticated communication and access control',async t=>{
-  const directory=await mkdtemp(join(tmpdir(),'vesper-test-')),origin='http://vesper.test';let application=createApp({databasePath:join(directory,'test.sqlite'),origin,requireEmailVerification:false});
+  const directory=await mkdtemp(join(tmpdir(),'vesper-test-')),origin='http://vesper.test';let relayFailure=false;let application=createApp({databasePath:join(directory,'test.sqlite'),origin,requireEmailVerification:false,getRelayServers:async()=>{if(relayFailure)throw Object.assign(new Error('Relais indisponible'),{status:503});return [{urls:'turns:relay.example:443',username:'temporary',credential:'temporary'}];}});
   await new Promise(resolve=>application.server.listen(0,'127.0.0.1',resolve));let base='http://127.0.0.1:'+application.server.address().port;
   t.after(async()=>{await application.close();await rm(directory,{recursive:true,force:true});});
   async function request(path,{actor,data,method=data===undefined?'GET':'POST',originHeader=origin}={}){const response=await fetch(base+path,{method,headers:{...(data===undefined?{}:{'Content-Type':'application/json',Origin:originHeader}),...(actor?{Cookie:actor.cookie}:{})},...(data===undefined?{}:{body:JSON.stringify(data)})});const result=await response.json();return {status:response.status,result,cookie:response.headers.get('set-cookie')?.split(';')[0],headers:response.headers};}
@@ -94,7 +94,7 @@ test('complete authenticated communication and access control',async t=>{
   });
   await t.test('voice membership and signaling authorization',async()=>{
     assert.equal((await request('/api/voice/join',{actor:alice,data:{channelId:textChannel}})).status,400);
-    for(const actor of [alice,bob])assert.equal((await request('/api/voice/join',{actor,data:{channelId:voiceChannel}})).status,200);
+    relayFailure=true;assert.equal((await request('/api/voice/join',{actor:alice,data:{channelId:voiceChannel}})).status,503);assert.equal((await request('/api/state',{actor:alice})).result.spaces.find(s=>s.id===spaceId).channels.find(c=>c.id===voiceChannel).voiceUsers.length,0);relayFailure=false;for(const actor of [alice,bob]){const joined=await request('/api/voice/join',{actor,data:{channelId:voiceChannel}});assert.equal(joined.status,200);assert.equal(joined.result.iceServers.at(-1).username,'temporary');}
     const unsigned={type:'offer',nonce:crypto.randomUUID(),sdp:{type:'offer',sdp:'test-signaling-only'}};const signature=await signStatement({channelId:voiceChannel,from:alice.id,to:bob.id,signal:unsigned},alice.keys);
     const signal={channelId:voiceChannel,to:bob.id,signal:{...unsigned,signature}};assert.equal((await request('/api/voice/signal',{actor:alice,data:signal})).status,200);assert.equal((await request('/api/voice/signal',{actor:carol,data:signal})).status,403);
     assert.equal((await request('/api/voice/signal',{actor:alice,data:{...signal,signal:{...signal.signal,sdp:{type:'offer',sdp:'modified'}}}})).status,400);
